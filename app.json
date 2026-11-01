@@ -1,17 +1,18 @@
 {
   "expo": {
-    "name": "oivuni-website-app",
-    "slug": "oivuni-website-app",
+    "name": "Oivuni AI",
+    "slug": "oivuni-ai",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "backgroundColor": "#111111",
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#111111",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -19,7 +20,17 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
-    }
+      "name": "Oivuni AI | Applied AI Research & Commercialization",
+      "shortName": "Oivuni AI",
+      "description": "Oivuni AI turns applied AI research into validated products that solve measurable problems.",
+      "themeColor": "#111111",
+      "backgroundColor": "#111111",
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
