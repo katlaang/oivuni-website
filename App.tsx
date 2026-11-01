@@ -55,7 +55,7 @@ export default function App() {
         </View>
 
         {/* Hero */}
-        <View onLayout={mark('top')} style={{ backgroundColor: colors.ink, overflow: 'hidden', position: 'relative' }}>
+        <View onLayout={mark('top')} style={{ backgroundColor: '#070A14', overflow: 'hidden', position: 'relative' }}>
           <HeroBackground compact={narrow} />
           <Container
             style={{
