@@ -3,252 +3,315 @@ import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 import Svg, { Circle, Defs, G, Line, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 /**
- * "Intelligence field" behind the homepage hero.
+ * Neural-network hero animation.
  *
- * Web: a canvas network — nodes drift, links form and fade with distance,
- * orange signals hop node to node along the links, and the field leans toward
- * the cursor. Pauses when off-screen or in a background tab.
- * Native, or reduced motion: a single still frame of the same field.
+ * Electrons fire from the input layer (left, "research"), travel through the
+ * hidden layers and converge on a single output node (right, "real-world
+ * innovation"). The output charges up, bursts, sends a shockwave back through
+ * the network, settles, and the cycle starts again.
+ *
+ * Web: canvas, paused off-screen and in background tabs.
+ * Reduced motion: one still frame. Native: static SVG of the network.
  */
 
 const ORANGE = '232,80,26';
-const ORANGE_LIGHT = '255,122,69';
+const HOT = '255,122,69';
 const STEEL = '214,220,224';
 
-type Node = { x: number; y: number; vx: number; vy: number; r: number; hot: boolean; flash: number };
-type Pulse = { from: number; to: number; t: number; speed: number; hops: number };
+type N = { x: number; y: number; bx: number; by: number; ph: number; layer: number; flash: number };
+type Electron = { from: number; to: number; t: number; speed: number };
+type Spark = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number };
+type Dust = { x: number; y: number; vx: number; vy: number; a: number };
+
+function seeded(seed: number) {
+  let s = seed;
+  return () => ((s = (s * 16807) % 2147483647) - 1) / 2147483646;
+}
+
+function layerSizes(compact: boolean) {
+  return compact ? [5, 6, 6, 4, 1] : [7, 9, 10, 9, 6, 3, 1];
+}
+
+function buildNetwork(w: number, h: number, compact: boolean, rand: () => number) {
+  const sizes = layerSizes(compact);
+  const nodes: N[] = [];
+  const layers: number[][] = [];
+  const x0 = w * (compact ? 0.08 : 0.05);
+  const x1 = w * (compact ? 0.86 : 0.86);
+  sizes.forEach((count, li) => {
+    const ids: number[] = [];
+    const x = x0 + ((x1 - x0) * li) / (sizes.length - 1);
+    const span = h * (count === 1 ? 0 : Math.min(0.82, 0.18 + count * 0.085));
+    for (let i = 0; i < count; i++) {
+      const y = h / 2 + (count === 1 ? 0 : -span / 2 + (span * i) / (count - 1)) + (rand() - 0.5) * h * 0.05;
+      const jx = li === 0 || li === sizes.length - 1 ? 0 : (rand() - 0.5) * w * 0.03;
+      ids.push(nodes.length);
+      nodes.push({ x: x + jx, y, bx: x + jx, by: y, ph: rand() * Math.PI * 2, layer: li, flash: 0 });
+    }
+    layers.push(ids);
+  });
+  return { nodes, layers };
+}
 
 function usePrefersReducedMotion() {
   const [reduce, setReduce] = useState(false);
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.matchMedia) {
-      const media = window.matchMedia('(prefers-reduced-motion: reduce)');
-      setReduce(media.matches);
-      const onChange = (e: MediaQueryListEvent) => setReduce(e.matches);
-      media.addEventListener('change', onChange);
-      return () => media.removeEventListener('change', onChange);
+      const m = window.matchMedia('(prefers-reduced-motion: reduce)');
+      setReduce(m.matches);
+      const on = (e: MediaQueryListEvent) => setReduce(e.matches);
+      m.addEventListener('change', on);
+      return () => m.removeEventListener('change', on);
     }
-    let mounted = true;
-    AccessibilityInfo.isReduceMotionEnabled().then((v) => mounted && setReduce(v)).catch(() => {});
+    let alive = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((v) => alive && setReduce(v)).catch(() => {});
     const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduce);
-    return () => { mounted = false; sub.remove(); };
+    return () => { alive = false; sub.remove(); };
   }, []);
   return reduce;
 }
 
-// Deterministic pseudo-random so the still frame is stable between renders.
-function seeded(seed: number) {
-  let s = seed;
-  return () => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
-
-function makeNodes(w: number, h: number, count: number, rand: () => number): Node[] {
-  const nodes: Node[] = [];
-  for (let i = 0; i < count; i++) {
-    // Bias toward the right side, where there is no copy.
-    const bias = Math.pow(rand(), 0.55);
-    nodes.push({
-      x: w * (0.18 + 0.86 * bias),
-      y: h * (-0.05 + 1.1 * rand()),
-      vx: (rand() - 0.5) * 0.22,
-      vy: (rand() - 0.5) * 0.22,
-      r: 1.1 + rand() * 1.8,
-      hot: rand() < 0.12,
-      flash: 0,
-    });
-  }
-  return nodes;
-}
-
-function CanvasField({ compact, still }: { compact: boolean; still: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const canvas = ref.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
 
-    const rand = seeded(7);
-    let w = 0, h = 0, dpr = 1;
-    let nodes: Node[] = [];
-    let pulses: Pulse[] = [];
-    let raf = 0;
-    let running = true;
-    let visible = true;
-    let last = performance.now();
-    let spawnClock = 0;
-    const mouse = { x: -9999, y: -9999, active: false };
+    const rand = seeded(11);
+    let w = 0, h = 0;
+    let nodes: N[] = [];
+    let layers: number[][] = [];
+    let electrons: Electron[] = [];
+    let sparks: Spark[] = [];
+    let dust: Dust[] = [];
+    let rings: { r: number; a: number; speed: number }[] = [];
+    let backWave = -1; // x position of the shockwave travelling back through the network
+    let charge = 0; // 0..1 at the output node
+    let phase: 'firing' | 'cooldown' = 'firing';
+    let phaseClock = 0;
+    let fireClock = 0;
+    let time = 0;
+    let raf = 0, running = true, visible = true, last = performance.now();
+    const mouse = { x: -9999, y: -9999, on: false };
 
-    const linkDist = () => (compact ? 120 : 150);
+    const outIdx = () => layers[layers.length - 1][0];
+    const CHARGE_PER_HIT = compact ? 0.06 : 0.035;
 
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      w = rect.width; h = rect.height;
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
+      const r = canvas.getBoundingClientRect();
+      w = r.width; h = r.height;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const density = compact ? 9000 : 11000;
-      const count = Math.max(36, Math.min(compact ? 60 : 120, Math.round((w * h) / density)));
-      nodes = makeNodes(w, h, count, rand);
-      pulses = [];
+      ({ nodes, layers } = buildNetwork(w, h, compact, rand));
+      electrons = []; sparks = []; rings = []; charge = 0; phase = 'firing'; phaseClock = 0; backWave = -1;
+      const dustCount = Math.round((w * h) / (compact ? 5000 : 6500));
+      dust = Array.from({ length: dustCount }, () => ({
+        x: rand() * w, y: rand() * h, vx: 0.15 + rand() * 0.35, vy: (rand() - 0.5) * 0.12, a: 0.08 + rand() * 0.22,
+      }));
     };
 
-    const neighbours = (i: number) => {
-      const a = nodes[i];
-      const out: number[] = [];
-      const d2max = linkDist() ** 2;
-      for (let j = 0; j < nodes.length; j++) {
-        if (j === i) continue;
-        const dx = nodes[j].x - a.x, dy = nodes[j].y - a.y;
-        if (dx * dx + dy * dy < d2max) out.push(j);
+    const emit = (from: number) => {
+      const li = nodes[from].layer;
+      if (li >= layers.length - 1) return;
+      const next = layers[li + 1];
+      // Bias toward targets nearer in height, so the flow funnels to the output.
+      const sorted = [...next].sort((a, b) => Math.abs(nodes[a].y - nodes[from].y) - Math.abs(nodes[b].y - nodes[from].y));
+      const to = sorted[Math.min(sorted.length - 1, Math.floor(Math.pow(rand(), 1.8) * sorted.length))];
+      electrons.push({ from, to, t: 0, speed: 0.85 + rand() * 0.6 });
+    };
+
+    const explode = () => {
+      const o = nodes[outIdx()];
+      const count = compact ? 120 : 220;
+      for (let i = 0; i < count; i++) {
+        const ang = rand() * Math.PI * 2;
+        const sp = 1.5 + Math.pow(rand(), 0.6) * (compact ? 5 : 8);
+        const max = 600 + rand() * 1000;
+        sparks.push({ x: o.x, y: o.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: max, max, size: 0.8 + rand() * 2 });
       }
-      return out;
-    };
-
-    const spawnPulse = (from?: number) => {
-      const start = from ?? Math.floor(rand() * nodes.length);
-      const n = neighbours(start);
-      if (!n.length) return;
-      const to = n[Math.floor(rand() * n.length)];
-      pulses.push({ from: start, to, t: 0, speed: 0.9 + rand() * 0.7, hops: 3 + Math.floor(rand() * 5) });
-      nodes[start].flash = 1;
+      rings.push({ r: 4, a: 1, speed: 0.7 }, { r: 2, a: 0.7, speed: 0.4 }, { r: 1, a: 0.45, speed: 0.22 });
+      backWave = o.x;
+      electrons = [];
+      charge = 0;
+      phase = 'cooldown';
+      phaseClock = 0;
     };
 
     const step = (dt: number) => {
-      const md = 170;
+      time += dt;
+
+      for (const d of dust) {
+        d.x += d.vx * dt * 0.03; d.y += d.vy * dt * 0.03;
+        if (d.x > w + 4) { d.x = -4; d.y = rand() * h; }
+        if (d.y < -4) d.y = h + 4; else if (d.y > h + 4) d.y = -4;
+      }
+
       for (const n of nodes) {
-        // Gentle pull toward the cursor.
-        if (mouse.active) {
-          const dx = mouse.x - n.x, dy = mouse.y - n.y;
-          const d = Math.hypot(dx, dy);
-          if (d < md && d > 1) {
-            const f = (1 - d / md) * 0.012;
-            n.vx += (dx / d) * f; n.vy += (dy / d) * f;
-          }
+        n.x = n.bx + Math.sin(time / 2200 + n.ph) * 4;
+        n.y = n.by + Math.cos(time / 2700 + n.ph) * 5;
+        n.flash = Math.max(0, n.flash - dt / 650);
+      }
+
+      phaseClock += dt;
+      if (phase === 'firing') {
+        fireClock += dt;
+        // Fire faster as the output fills up — the network "builds momentum".
+        const interval = (compact ? 150 : 85) * (1 - charge * 0.5);
+        while (fireClock > interval) {
+          fireClock -= interval;
+          const input = layers[0][Math.floor(rand() * layers[0].length)];
+          nodes[input].flash = 1;
+          emit(input);
         }
-        n.vx *= 0.995; n.vy *= 0.995;
-        const sp = Math.hypot(n.vx, n.vy);
-        if (sp < 0.06) { n.vx += (rand() - 0.5) * 0.02; n.vy += (rand() - 0.5) * 0.02; }
-        if (sp > 0.5) { n.vx *= 0.5 / sp; n.vy *= 0.5 / sp; }
-        n.x += n.vx * dt * 0.06; n.y += n.vy * dt * 0.06;
-        const minX = w * 0.12;
-        if (n.x < minX) { n.x = minX; n.vx = Math.abs(n.vx); }
-        if (n.x > w + 20) { n.x = w + 20; n.vx = -Math.abs(n.vx); }
-        if (n.y < -20) { n.y = -20; n.vy = Math.abs(n.vy); }
-        if (n.y > h + 20) { n.y = h + 20; n.vy = -Math.abs(n.vy); }
-        n.flash = Math.max(0, n.flash - dt / 900);
+      } else if (phaseClock > 1400 && sparks.length < 20) {
+        phase = 'firing'; phaseClock = 0; fireClock = 0;
       }
 
-      spawnClock += dt;
-      const interval = compact ? 900 : 520;
-      if (spawnClock > interval && pulses.length < (compact ? 6 : 14)) { spawnClock = 0; spawnPulse(); }
-
-      const next: Pulse[] = [];
-      for (const p of pulses) {
-        const a = nodes[p.from], b = nodes[p.to];
-        const len = Math.max(20, Math.hypot(b.x - a.x, b.y - a.y));
-        p.t += (dt * 0.12 * p.speed) / len;
-        if (p.t >= 1) {
-          nodes[p.to].flash = 1;
-          if (p.hops > 0) {
-            const n = neighbours(p.to).filter((j) => j !== p.from);
-            if (n.length) {
-              next.push({ from: p.to, to: n[Math.floor(rand() * n.length)], t: 0, speed: p.speed, hops: p.hops - 1 });
-            }
-          }
-        } else next.push(p);
+      const keep: Electron[] = [];
+      const current = electrons;
+      electrons = []; // emit() pushes newly spawned electrons here
+      for (const e of current) {
+        const a = nodes[e.from], b = nodes[e.to];
+        const len = Math.max(30, Math.hypot(b.x - a.x, b.y - a.y));
+        e.t += (dt * 0.32 * e.speed) / len;
+        if (e.t < 1) { keep.push(e); continue; }
+        nodes[e.to].flash = 1;
+        if (e.to === outIdx()) {
+          charge = Math.min(1, charge + CHARGE_PER_HIT);
+          if (charge >= 1 && phase === 'firing') { explode(); return; }
+        } else {
+          emit(e.to);
+          if (rand() < 0.12) emit(e.to); // occasional branching
+        }
       }
-      pulses = next;
+      electrons = keep.concat(electrons);
+      if (electrons.length > 220) electrons = electrons.slice(-220);
+
+      for (const s of sparks) {
+        s.x += s.vx * dt * 0.06; s.y += s.vy * dt * 0.06;
+        s.vx *= 0.985; s.vy *= 0.985; s.vy += 0.0025 * dt * 0.06;
+        s.life -= dt;
+      }
+      sparks = sparks.filter((s) => s.life > 0);
+      for (const r of rings) { r.r += r.speed * dt; r.a -= dt / 1500; }
+      rings = rings.filter((r) => r.a > 0);
+
+      if (backWave >= 0) {
+        backWave -= dt * 0.9;
+        for (const n of nodes) if (Math.abs(n.x - backWave) < 18) n.flash = Math.max(n.flash, 0.8);
+        if (backWave < -20) backWave = -1;
+      }
     };
 
     const draw = () => {
       ctx.clearRect(0, 0, w, h);
+      const o = nodes[outIdx()];
 
-      // Ambient glow behind the field.
-      const g = ctx.createRadialGradient(w * 0.72, h * 0.45, 0, w * 0.72, h * 0.45, Math.max(w, h) * 0.55);
-      g.addColorStop(0, `rgba(${ORANGE},0.16)`);
-      g.addColorStop(0.5, `rgba(${ORANGE},0.04)`);
+      // Glow around the output node grows with charge.
+      const glowR = Math.max(w, h) * (0.25 + charge * 0.25);
+      const g = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, glowR);
+      g.addColorStop(0, `rgba(${ORANGE},${0.1 + charge * 0.22})`);
       g.addColorStop(1, `rgba(${ORANGE},0)`);
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
-      // Links.
-      const L = linkDist();
+      for (const d of dust) {
+        ctx.fillStyle = `rgba(${STEEL},${d.a})`;
+        ctx.fillRect(d.x, d.y, 1.2, 1.2);
+      }
+
+      // Synapses between consecutive layers.
       ctx.lineWidth = 1;
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
-        for (let j = i + 1; j < nodes.length; j++) {
-          const b = nodes[j];
-          const dx = a.x - b.x, dy = a.y - b.y;
-          const d2 = dx * dx + dy * dy;
-          if (d2 > L * L) continue;
-          const k = 1 - Math.sqrt(d2) / L;
-          let alpha = k * 0.28;
-          if (mouse.active) {
-            const mx = (a.x + b.x) / 2 - mouse.x, my = (a.y + b.y) / 2 - mouse.y;
-            const md = Math.hypot(mx, my);
-            if (md < 180) alpha += (1 - md / 180) * 0.35 * k;
+      for (let li = 0; li < layers.length - 1; li++) {
+        for (const i of layers[li]) for (const j of layers[li + 1]) {
+          const a = nodes[i], b = nodes[j];
+          let alpha = 0.1;
+          if (mouse.on) {
+            const md = Math.hypot((a.x + b.x) / 2 - mouse.x, (a.y + b.y) / 2 - mouse.y);
+            if (md < 160) alpha += (1 - md / 160) * 0.18;
           }
-          const heat = Math.max(a.flash, b.flash);
-          ctx.strokeStyle = heat > 0.05
-            ? `rgba(${ORANGE_LIGHT},${Math.min(0.75, alpha + heat * 0.45 * k)})`
-            : `rgba(${STEEL},${alpha})`;
+          const heat = Math.min(a.flash, b.flash);
+          ctx.strokeStyle = heat > 0.1 ? `rgba(${HOT},${alpha + heat * 0.3})` : `rgba(${STEEL},${alpha})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
 
-      // Signals travelling along links, with a short tail.
-      for (const p of pulses) {
-        const a = nodes[p.from], b = nodes[p.to];
-        const x = a.x + (b.x - a.x) * p.t, y = a.y + (b.y - a.y) * p.t;
-        const tt = Math.max(0, p.t - 0.35);
+      // Electrons with comet tails.
+      for (const e of electrons) {
+        const a = nodes[e.from], b = nodes[e.to];
+        const x = a.x + (b.x - a.x) * e.t, y = a.y + (b.y - a.y) * e.t;
+        const tt = Math.max(0, e.t - 0.28);
         const tx = a.x + (b.x - a.x) * tt, ty = a.y + (b.y - a.y) * tt;
         const tail = ctx.createLinearGradient(tx, ty, x, y);
-        tail.addColorStop(0, `rgba(${ORANGE_LIGHT},0)`);
-        tail.addColorStop(1, `rgba(${ORANGE_LIGHT},0.9)`);
-        ctx.strokeStyle = tail; ctx.lineWidth = 1.6;
+        tail.addColorStop(0, `rgba(${HOT},0)`);
+        tail.addColorStop(1, `rgba(${HOT},0.95)`);
+        ctx.strokeStyle = tail; ctx.lineWidth = 1.8;
         ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(x, y); ctx.stroke();
-        const halo = ctx.createRadialGradient(x, y, 0, x, y, 12);
-        halo.addColorStop(0, `rgba(${ORANGE_LIGHT},0.55)`);
-        halo.addColorStop(1, `rgba(${ORANGE},0)`);
-        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#FFD2BF'; ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, 9);
+        halo.addColorStop(0, `rgba(${HOT},0.6)`); halo.addColorStop(1, `rgba(${ORANGE},0)`);
+        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#FFE1D3'; ctx.beginPath(); ctx.arc(x, y, 1.7, 0, Math.PI * 2); ctx.fill();
       }
 
-      // Nodes.
+      // Neurons.
       for (const n of nodes) {
-        if (n.flash > 0.02) {
-          const rr = 4 + n.flash * 14;
-          const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, rr);
-          glow.addColorStop(0, `rgba(${ORANGE_LIGHT},${0.5 * n.flash})`);
-          glow.addColorStop(1, `rgba(${ORANGE},0)`);
-          ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, Math.PI * 2); ctx.fill();
+        const isOut = n === o;
+        const base = isOut ? 5 + charge * 7 : 2.6;
+        if (n.flash > 0.02 || isOut) {
+          const rr = isOut ? 18 + charge * 40 + Math.sin(time / 120) * charge * 4 : 5 + n.flash * 14;
+          const a = isOut ? 0.35 + charge * 0.5 : 0.5 * n.flash;
+          const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, rr);
+          gl.addColorStop(0, `rgba(${HOT},${a})`); gl.addColorStop(1, `rgba(${ORANGE},0)`);
+          ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, Math.PI * 2); ctx.fill();
         }
-        ctx.fillStyle = n.hot || n.flash > 0.3 ? `rgba(${ORANGE_LIGHT},0.95)` : `rgba(${STEEL},0.7)`;
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + n.flash * 1.2, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = n.flash > 0.3 || isOut ? `rgba(${HOT},0.95)` : `rgba(${STEEL},0.45)`;
+        ctx.fillStyle = n.flash > 0.3 || isOut ? `rgba(${HOT},${isOut ? 0.95 : 0.85})` : '#151515';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, base + n.flash * 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
+
+      // Explosion.
+      for (const r of rings) {
+        ctx.strokeStyle = `rgba(${HOT},${Math.min(1, r.a)})`; ctx.lineWidth = 1 + r.a * 2.5;
+        ctx.beginPath(); ctx.arc(o.x, o.y, r.r, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'lighter';
+      if (rings.length && rings[0].a > 0.4) {
+        const k = (rings[0].a - 0.4) / 0.6;
+        const fl = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, 60 + (1 - k) * 220);
+        fl.addColorStop(0, `rgba(255,240,230,${0.9 * k})`);
+        fl.addColorStop(0.3, `rgba(${HOT},${0.5 * k})`);
+        fl.addColorStop(1, `rgba(${ORANGE},0)`);
+        ctx.fillStyle = fl; ctx.fillRect(0, 0, w, h);
+      }
+      for (const s of sparks) {
+        const k = s.life / s.max;
+        ctx.strokeStyle = k > 0.65 ? `rgba(255,236,224,${k})` : `rgba(${HOT},${k})`;
+        ctx.lineWidth = s.size * (0.6 + k);
+        ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.vx * 3, s.y - s.vy * 3); ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'source-over';
     };
 
     const loop = (now: number) => {
-      const dt = Math.min(50, now - last);
-      last = now;
+      const dt = Math.min(50, now - last); last = now;
       if (running && visible) { step(dt); draw(); }
       raf = requestAnimationFrame(loop);
     };
 
     resize();
     if (still) {
-      for (let i = 0; i < 6; i++) spawnPulse();
-      for (const p of pulses) p.t = 0.6;
+      charge = 0.7;
+      for (let i = 0; i < 40; i++) {
+        const n = Math.floor(rand() * (nodes.length - 1));
+        emit(n);
+      }
+      electrons.forEach((e) => (e.t = 0.3 + rand() * 0.6));
       draw();
-    } else {
-      raf = requestAnimationFrame(loop);
-    }
+    } else raf = requestAnimationFrame(loop);
 
     const ro = new ResizeObserver(() => { resize(); if (still) draw(); });
     ro.observe(canvas);
@@ -256,57 +319,37 @@ function CanvasField({ compact, still }: { compact: boolean; still: boolean }) {
     io.observe(canvas);
     const onVis = () => { running = !document.hidden; last = performance.now(); };
     document.addEventListener('visibilitychange', onVis);
-
-    // The canvas ignores pointer events so the hero copy stays clickable; track on window instead.
     const onMove = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
       mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
-      mouse.active = mouse.y > 0 && mouse.y < r.height && e.pointerType === 'mouse';
+      mouse.on = e.pointerType === 'mouse' && mouse.y > 0 && mouse.y < r.height;
     };
-    const onLeave = () => { mouse.active = false; };
-    if (!still) {
-      window.addEventListener('pointermove', onMove, { passive: true });
-      document.addEventListener('pointerleave', onLeave);
-    }
+    if (!still) window.addEventListener('pointermove', onMove, { passive: true });
 
     return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect(); io.disconnect();
+      cancelAnimationFrame(raf); ro.disconnect(); io.disconnect();
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerleave', onLeave);
     };
   }, [compact, still]);
 
   return createElement('canvas', {
-    ref: canvasRef,
+    ref,
     'aria-hidden': true,
     style: { position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', pointerEvents: 'none' },
   });
 }
 
-/** Still frame for native targets. */
-function StaticField() {
-  const rand = seeded(7);
-  const nodes = makeNodes(1000, 570, 70, rand);
-  const lines: [Node, Node, number][] = [];
-  for (let i = 0; i < nodes.length; i++)
-    for (let j = i + 1; j < nodes.length; j++) {
-      const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
-      if (d < 140) lines.push([nodes[i], nodes[j], 1 - d / 140]);
-    }
+function StaticNetwork({ compact }: { compact: boolean }) {
+  const { nodes, layers } = buildNetwork(1000, 570, compact, seeded(11));
+  const lines: [N, N][] = [];
+  for (let li = 0; li < layers.length - 1; li++)
+    for (const i of layers[li]) for (const j of layers[li + 1]) lines.push([nodes[i], nodes[j]]);
+  const out = nodes[nodes.length - 1];
   return (
-    <Svg width="100%" height="100%" viewBox="0 0 1000 570" preserveAspectRatio="xMidYMid slice" style={StyleSheet.absoluteFill}>
-      <G>
-        {lines.map(([a, b, k], i) => (
-          <Line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={`rgb(${STEEL})`} strokeOpacity={k * 0.28} strokeWidth={1} />
-        ))}
-      </G>
-      <G>
-        {nodes.map((n, i) => (
-          <Circle key={i} cx={n.x} cy={n.y} r={n.r} fill={n.hot ? `rgb(${ORANGE_LIGHT})` : `rgb(${STEEL})`} fillOpacity={n.hot ? 0.95 : 0.7} />
-        ))}
-      </G>
+    <Svg width="100%" height="100%" viewBox="0 0 1000 570" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
+      <G>{lines.map(([a, b], i) => <Line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={`rgb(${STEEL})`} strokeOpacity={0.08} />)}</G>
+      <G>{nodes.map((n, i) => <Circle key={i} cx={n.x} cy={n.y} r={n === out ? 8 : 3} fill={n === out ? `rgb(${HOT})` : '#151515'} stroke={n === out ? `rgb(${HOT})` : `rgb(${STEEL})`} strokeOpacity={n === out ? 1 : 0.45} />)}</G>
     </Svg>
   );
 }
@@ -315,14 +358,14 @@ export function HeroBackground({ compact }: { compact: boolean }) {
   const reduceMotion = usePrefersReducedMotion();
   return (
     <View pointerEvents="none" accessible={false} style={StyleSheet.absoluteFill}>
-      {Platform.OS === 'web' ? <CanvasField compact={compact} still={reduceMotion} /> : <StaticField />}
-      {/* Scrim keeps the hero copy readable at desktop and phone widths. */}
+      {Platform.OS === 'web' ? <CanvasNetwork compact={compact} still={reduceMotion} /> : <StaticNetwork compact={compact} />}
+      {/* Light scrim behind the copy column only — the network stays visible on the left. */}
       <Svg width="100%" height="100%" viewBox="0 0 1000 570" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
         <Defs>
           <LinearGradient id="textScrim" x1="0%" y1="0%" x2="100%" y2="0%">
-            <Stop offset="0%" stopColor="#111111" stopOpacity="0.92" />
-            <Stop offset={compact ? '70%' : '40%'} stopColor="#111111" stopOpacity={compact ? '0.6' : '0.45'} />
-            <Stop offset="100%" stopColor="#111111" stopOpacity={compact ? '0.3' : '0'} />
+            <Stop offset="0%" stopColor="#111111" stopOpacity={compact ? '0.55' : '0.45'} />
+            <Stop offset={compact ? '85%' : '55%'} stopColor="#111111" stopOpacity={compact ? '0.4' : '0.25'} />
+            <Stop offset="100%" stopColor="#111111" stopOpacity="0" />
           </LinearGradient>
         </Defs>
         <Rect width="1000" height="570" fill="url(#textScrim)" />
