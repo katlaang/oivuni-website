@@ -54,14 +54,39 @@ const CEREBELLUM =
   'C278 266 262 256 256 240 C252 226 254 212 262 204 Z';
 const STEM = 'M224 236 C236 238 248 240 256 244 C254 262 250 282 246 298 L226 298 C226 280 226 258 224 236 Z';
 const SULCI = [
-  'M118 214 C150 200 186 190 220 186 C240 184 256 176 268 162', // lateral (Sylvian) fissure
-  'M214 26 C206 52 216 74 204 98 C196 116 206 136 198 158 C194 170 198 180 196 186', // central sulcus
-  'M300 40 C292 70 306 92 298 120 C292 140 300 160 296 190', // parieto-occipital
+  'M116 212 C146 198 184 190 222 186 C242 182 258 172 272 156', // lateral (Sylvian) fissure
+  'M226 24 C216 46 230 66 216 92 C204 114 218 134 204 156 C196 168 194 178 192 186', // central sulcus
 ];
 
 type BrainPoint = { x: number; y: number; z: number; c: string; b: number; sx: number; sy: number };
 
-/** Rasterise the brain shape once, then sample points: dense on the outline, fissures and gyri. */
+/** Gradient noise with a seeded permutation table. */
+function makeNoise(rand: () => number) {
+  const perm = new Uint8Array(512);
+  const p = Array.from({ length: 256 }, (_, i) => i);
+  for (let i = 255; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+  const grad = (h: number, x: number, y: number) => {
+    const a = (h & 7) * (Math.PI / 4);
+    return Math.cos(a) * x + Math.sin(a) * y;
+  };
+  const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
+  return (x: number, y: number) => {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const u = fade(xf), v = fade(yf);
+    const aa = perm[perm[X] + Y], ab = perm[perm[X] + Y + 1], ba = perm[perm[X + 1] + Y], bb = perm[perm[X + 1] + Y + 1];
+    const x1 = grad(aa, xf, yf) + u * (grad(ba, xf - 1, yf) - grad(aa, xf, yf));
+    const x2 = grad(ab, xf, yf - 1) + u * (grad(bb, xf - 1, yf - 1) - grad(ab, xf, yf - 1));
+    return x1 + v * (x2 - x1);
+  };
+}
+
+/**
+ * Build the brain as a shaded surface, then sample points from it:
+ * rounded gyri are bright and dense, sulci (grooves) are dark gaps, the
+ * fissures separate the lobes, and a soft rim glow defines the silhouette.
+ */
 function buildBrain(count: number, rand: () => number): BrainPoint[] {
   const W = 400, H = 300;
   const layer = (draw: (g: CanvasRenderingContext2D) => void) => {
@@ -71,43 +96,57 @@ function buildBrain(count: number, rand: () => number): BrainPoint[] {
     g.fillStyle = '#fff'; g.strokeStyle = '#fff'; g.lineJoin = 'round'; g.lineCap = 'round';
     draw(g);
     const d = g.getImageData(0, 0, W, H).data;
-    return (x: number, y: number) => d[((y | 0) * W + (x | 0)) * 4 + 3] > 128;
+    return (x: number, y: number) => d[((y | 0) * W + (x | 0)) * 4 + 3] / 255;
   };
   const cere = layer((g) => { g.fill(new Path2D(CEREBRUM)); g.fill(new Path2D(TEMPORAL)); });
   const cbl = layer((g) => g.fill(new Path2D(CEREBELLUM)));
   const stem = layer((g) => g.fill(new Path2D(STEM)));
-  const edge = layer((g) => {
-    g.lineWidth = 3.2;
-    [CEREBRUM, TEMPORAL, CEREBELLUM, STEM].forEach((p) => g.stroke(new Path2D(p)));
+  const fiss = layer((g) => {
+    g.filter = 'blur(1.5px)';
+    g.lineWidth = 6; g.stroke(new Path2D(SULCI[0]));
+    g.lineWidth = 3.5; g.stroke(new Path2D(SULCI[1]));
   });
-  const fissure = layer((g) => { g.lineWidth = 3; SULCI.forEach((p) => g.stroke(new Path2D(p))); });
+  const gap = layer((g) => { g.filter = 'blur(1.5px)'; g.lineWidth = 4; g.stroke(new Path2D(CEREBELLUM)); });
+  const inner = layer((g) => { g.filter = 'blur(5px)'; g.fill(new Path2D(CEREBRUM)); g.fill(new Path2D(TEMPORAL)); g.fill(new Path2D(CEREBELLUM)); });
 
-  // Meandering gyri: contour lines of a smooth field.
+  const n1 = makeNoise(rand), n2 = makeNoise(rand), n3 = makeNoise(rand);
+  // Gyri: ridged, domain-warped noise gives worm-like folds, oriented roughly
+  // perpendicular to the crown and along the temporal lobe lower down.
   const gyri = (x: number, y: number) => {
-    const f = Math.sin(x * 0.085 + Math.sin(y * 0.06) * 2.4) + Math.sin(y * 0.1 + Math.sin(x * 0.055) * 2.2) + 0.6 * Math.sin((x - y) * 0.07 + 1.3);
-    return Math.abs(f) < 0.16 || Math.abs(f - 1.1) < 0.12 || Math.abs(f + 1.1) < 0.12;
+    const wx = n2(x * 0.02, y * 0.02) * 1.6, wy = n3(x * 0.02 + 7, y * 0.02 + 3) * 1.6;
+    const ny = (y - 30) / 190;
+    const sx = 0.05 * (1.25 - 0.5 * ny), sy = 0.05 * (0.75 + 0.5 * ny);
+    const v = Math.abs(n1(x * sx + wx, y * sy + wy));
+    return Math.min(1, Math.max(0, (v - 0.03) / 0.2));
   };
-  const folia = (x: number, y: number) => Math.abs(Math.sin(y * 0.55 + Math.sin(x * 0.07) * 1.6)) < 0.3;
+  const folia = (x: number, y: number) => {
+    const v = Math.abs(Math.sin(y * 0.75 + n1(x * 0.03, y * 0.03) * 2.4 + Math.sin(x * 0.045) * 2.2));
+    return Math.min(1, Math.max(0, (v - 0.12) / 0.6));
+  };
+  const lum = (x: number, y: number) => {
+    const inC = cere(x, y) >= 0.5, inB = cbl(x, y) >= 0.5, inS = stem(x, y) >= 0.5;
+    if (!inC && !inB && !inS) return 0;
+    const edge = 1 - inner(x, y);
+    let l = inC ? gyri(x, y) * (1 - fiss(x, y) * 0.95) : inB ? folia(x, y) * 0.9 * (1 - gap(x, y) * 0.95) : 0.5;
+    const light = 0.6 + 0.4 * (1 - y / H);
+    const rim = Math.min(1, Math.max(0, (edge - 0.12) / 0.38));
+    l = l * light * (0.75 + 0.25 * (1 - edge)) + rim * 0.55 * (0.6 + 0.4 * light) * (inC || inB ? 1 : 0.4);
+    return Math.min(1, l);
+  };
 
   const pts: BrainPoint[] = [];
   let guard = 0;
-  while (pts.length < count && guard++ < count * 60) {
+  while (pts.length < count && guard++ < count * 80) {
     const x = rand() * W, y = rand() * H;
-    let keep = 0, bright = 0.45;
-    if (edge(x, y)) { keep = 0.95; bright = 0.85; }
-    else if (fissure(x, y)) { keep = 0.9; bright = 0.8; }
-    else if (cbl(x, y) && !cere(x, y)) { const on = folia(x, y); keep = on ? 0.85 : 0.05; bright = on ? 0.7 : 0.35; }
-    else if (cere(x, y)) { const on = gyri(x, y); keep = on ? 0.85 : 0.04; bright = on ? 0.72 : 0.35; }
-    else if (stem(x, y)) { keep = 0.4; bright = 0.4; }
-    if (!keep || rand() > keep) continue;
-
+    const L = lum(x, y);
+    if (L <= 0 || rand() > Math.pow(L, 1.3) * 0.95 + 0.01) continue;
     const nx = (x - 205) / 175, ny = (y - 160) / 175;
     const half = 0.6 * Math.sqrt(Math.max(0, 1 - nx * nx - (ny * 1.4) ** 2)) + 0.06;
     const z = (rand() - 0.5) * 2 * half;
     const r = rand();
-    const c = r < 0.05 ? '255,150,90' : r < 0.09 ? '230,120,200' : r < 0.42 ? '150,215,255' : '95,160,255';
+    const c = r < 0.04 ? '255,150,90' : r < 0.07 ? '230,120,200' : L > 0.7 ? '175,225,255' : r < 0.5 ? '130,200,255' : '90,155,255';
     const ang = rand() * Math.PI * 2, sc = 0.4 + rand() * 0.9;
-    pts.push({ x: nx, y: ny, z, c, b: bright * (0.6 + rand() * 0.4) + 0.1, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
+    pts.push({ x: nx, y: ny, z, c, b: 0.25 + 0.75 * L, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
   }
   return pts;
 }
@@ -142,7 +181,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     if (!canvas || !ctx) return;
 
     const rand = seeded(23);
-    const brain = buildBrain(compact ? 4200 : 8000, rand);
+    const brain = buildBrain(compact ? 6000 : 13000, rand);
     let w = 0, h = 0, cx = 0, cy = 0, S = 1;
     let streaks: Streak[] = [];
     let motes: Mote[] = [];
@@ -181,7 +220,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (compact) { cx = w * 0.5; cy = h * 0.56; S = Math.min(w * 0.46, h * 0.3); }
-      else { cx = w * 0.68; cy = h * 0.52; S = Math.min(w * 0.27, h * 0.44); }
+      else { cx = w * 0.6; cy = h * 0.52; S = Math.min(w * 0.3, h * 0.48); }
       reach = Math.max(Math.hypot(cx, cy), Math.hypot(w - cx, cy), Math.hypot(cx, h - cy), Math.hypot(w - cx, h - cy)) * 1.05;
     };
 
@@ -270,18 +309,18 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       if (ba > 0.01) {
         const th = rotation(), cs = Math.cos(th), sn = Math.sin(th);
         const scatter = (1 - gather) * S * 0.9;
-        const dim = (compact ? 0.7 : 0.95) * ba * (1 + surgeP * 0.45);
+        const dim = (compact ? 0.85 : 1.15) * ba * (1 + surgeP * 0.4);
         for (const p of brain) {
           const xr = p.x * cs - p.z * sn;
           const zr = p.x * sn + p.z * cs;
-          const depth = 0.55 + 0.45 * (1 - (zr + 0.8) / 1.6);
+          const depth = 0.78 + 0.22 * (1 - (zr + 0.8) / 1.6);
           const jitter = surgeP > 0 ? Math.sin(time * 0.02 + p.sx * 50) * surgeP * 1.5 : 0;
           const x = cx + xr * S + p.sx * scatter + jitter;
           const y = cy + p.y * S + p.sy * scatter;
-          const twinkle = 0.75 + 0.25 * Math.sin(time * 0.003 + p.sx * 20);
+          const twinkle = 0.85 + 0.15 * Math.sin(time * 0.003 + p.sx * 20);
           const a = Math.min(1, p.b * depth * twinkle * dim);
           ctx.fillStyle = `rgba(${p.c},${a})`;
-          const sz = p.b > 0.88 ? 2 : 1.3;
+          const sz = p.b > 0.85 ? 2.2 : 1.6;
           ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
         }
       }
