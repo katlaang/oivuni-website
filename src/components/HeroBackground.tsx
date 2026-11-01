@@ -7,13 +7,13 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop } from 're
  *
  * Electrons fire from the input layer (left, "research"), travel through the
  * hidden layers and converge on several output neurons (right, "real-world
- * innovation"). Each output charges independently; when full it blooms into a
- * nebula (cyan core, orange/red filaments), then swirls and collapses back into
- * itself. Bursts are staggered so only one happens at a time.
+ * innovation"). Each output charges independently; when full it bursts and the
+ * energy disperses as glowing gas that billows, curls and thins into the dark.
+ * Bursts are staggered so only one happens at a time.
  *
  * Photosensitivity safeguards (WCAG 2.3.1 / 2.2.2):
  *  - at most one burst every 3 s (limit is 3 flashes per second)
- *  - the nebula brightens and fades over ~3 s and is confined to a small area;
+ *  - the gas fades in over ~0.25 s and thins out over ~4 s at low opacity;
  *    no full-screen flash, no strobing
  *  - visible pause control; choice is remembered per browser
  *  - honours prefers-reduced-motion with a still frame
@@ -24,18 +24,14 @@ const ORANGE = '232,80,26';
 const HOT = '255,122,69';
 const STEEL = '214,220,224';
 const MIN_BURST_GAP = 3000; // ms between any two bursts
-const OUTPUT_COOLDOWN = 1200; // ms an output rests after its nebula collapses
-const NEB_EXPAND = 1300, NEB_HOLD = 700, NEB_COLLAPSE = 900;
-const NEB_LIFE = NEB_EXPAND + NEB_HOLD + NEB_COLLAPSE;
+const OUTPUT_COOLDOWN = 1200; // ms an output rests after bursting
+const GAS_LIFE = 4200; // ms until a burst's gas has fully dispersed
 
 type N = { x: number; y: number; bx: number; by: number; ph: number; layer: number; flash: number };
 type Electron = { from: number; to: number; t: number; speed: number };
-type Fil = { pts: [number, number][]; w: number }; // polar points: angle, radius fraction
-type Arc = { a: number; span: number; d: number };
-type Lobe = { a: number; d: number; r: number };
-type Star = { a: number; d: number; s: number };
-type Nebula = { x: number; y: number; age: number; spin: number; fils: Fil[]; arcs: Arc[]; lobes: Lobe[]; stars: Star[] };
+type Puff = { x: number; y: number; vx: number; vy: number; r: number; r1: number; life: number; max: number; seed: number; tone: number; delay: number; curl: number };
 type Dust = { x: number; y: number; vx: number; vy: number; a: number };
+type Ember = { x: number; y: number; vx: number; vy: number; life: number; max: number };
 type Out = { node: number; charge: number; rest: number };
 
 function seeded(seed: number) {
@@ -116,7 +112,8 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
     let layers: number[][] = [];
     let outs: Out[] = [];
     let electrons: Electron[] = [];
-    let nebulae: Nebula[] = [];
+    let puffs: Puff[] = [];
+    let embers: Ember[] = [];
     let dust: Dust[] = [];
     let sinceBurst = MIN_BURST_GAP;
     let fireClock = 0;
@@ -133,7 +130,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ({ nodes, layers } = buildNetwork(w, h, compact, rand));
       outs = layers[layers.length - 1].map((node, i) => ({ node, charge: 0.25 * i, rest: 0 }));
-      electrons = []; nebulae = [];
+      electrons = []; puffs = []; embers = [];
       const dustCount = Math.round((w * h) / (compact ? 5000 : 6500));
       dust = Array.from({ length: dustCount }, () => ({
         x: rand() * w, y: rand() * h, vx: 0.15 + rand() * 0.35, vy: (rand() - 0.5) * 0.12, a: 0.08 + rand() * 0.22,
@@ -152,28 +149,42 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       electrons.push({ from, to, t: 0, speed: 0.85 + rand() * 0.6 });
     };
 
+    // Soft round sprites, pre-rendered once, tinted per tone (hot core → orange → ember).
+    const sprite = (rgb: string) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 128;
+      const g = c.getContext('2d')!;
+      const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0, `rgba(${rgb},1)`);
+      grad.addColorStop(0.4, `rgba(${rgb},0.45)`);
+      grad.addColorStop(1, `rgba(${rgb},0)`);
+      g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+      return c;
+    };
+    const tones = [sprite('255,196,150'), sprite(HOT), sprite(ORANGE), sprite('150,52,30')];
+
     const burst = (o: Out) => {
       const n = nodes[o.node];
-      const fils: Fil[] = [];
-      const FC = compact ? 46 : 72;
-      for (let i = 0; i < FC; i++) {
-        let a = rand() * Math.PI * 2;
-        let d = 0.08 + rand() * 0.2;
-        const pts: [number, number][] = [[a, d]];
-        const segs = 5 + Math.floor(rand() * 6);
-        for (let k = 0; k < segs; k++) {
-          a += (rand() - 0.5) * 0.75;
-          d += 0.06 + rand() * 0.12;
-          pts.push([a, Math.min(1.1, d)]);
-        }
-        fils.push({ pts, w: 0.6 + rand() * 1.1 });
+      const PC = compact ? 80 : 140;
+      for (let i = 0; i < PC; i++) {
+        const ang = rand() * Math.PI * 2;
+        const sp = 0.5 + Math.pow(rand(), 0.5) * (compact ? 2.6 : 4);
+        const max = 2400 + rand() * (GAS_LIFE - 2400);
+        puffs.push({
+          x: n.x + (rand() - 0.5) * 8, y: n.y + (rand() - 0.5) * 8,
+          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp * 0.75,
+          r: 6 + rand() * 10, r1: (compact ? 40 : 60) + rand() * (compact ? 70 : 110),
+          life: max, max, seed: rand() * 1000, tone: rand(),
+          delay: Math.pow(rand(), 1.5) * 700, // gas streams out over ~0.7 s rather than all at once
+          curl: (rand() < 0.5 ? -1 : 1) * (0.004 + rand() * 0.01),
+        });
       }
-      const arcs: Arc[] = Array.from({ length: compact ? 26 : 44 }, () => ({ a: rand() * Math.PI * 2, span: 0.15 + rand() * 0.4, d: 0.3 + rand() * 0.75 }));
-      const lobes: Lobe[] = Array.from({ length: 8 }, (_, i) => ({ a: rand() * Math.PI * 2, d: i < 4 ? 0.1 + rand() * 0.25 : 0.45 + rand() * 0.35, r: i < 4 ? 0.35 + rand() * 0.3 : 0.3 + rand() * 0.25 }));
-      const stars: Star[] = Array.from({ length: compact ? 30 : 50 }, () => ({ a: rand() * Math.PI * 2, d: rand() * 1.15, s: 0.5 + rand() * 1.2 }));
-      nebulae.push({ x: n.x, y: n.y, age: 0, spin: rand() < 0.5 ? -1 : 1, fils, arcs, lobes, stars });
+      for (let i = 0; i < (compact ? 30 : 50); i++) {
+        const ang = rand() * Math.PI * 2, sp = 1 + rand() * 3.5, max = 900 + rand() * 1600;
+        embers.push({ x: n.x, y: n.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: max, max });
+      }
       for (const id of layers[layers.length - 2]) nodes[id].flash = Math.max(nodes[id].flash, 0.7);
-      o.charge = 0; o.rest = OUTPUT_COOLDOWN + NEB_LIFE; sinceBurst = 0;
+      o.charge = 0; o.rest = OUTPUT_COOLDOWN + 1500; sinceBurst = 0;
     };
 
     const step = (dt: number) => {
@@ -221,16 +232,22 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         if (ready.length) burst(ready[0]);
       }
 
-      for (const nb of nebulae) {
-        nb.age += dt;
-        if (nb.age >= NEB_LIFE && nb.age - dt < NEB_LIFE) {
-          // Collapse complete: the output re-ignites as a point and the network brightens.
-          const o = outs.find((q) => Math.hypot(nodes[q.node].x - nb.x, nodes[q.node].y - nb.y) < 30);
-          if (o) nodes[o.node].flash = 1;
-          for (const id of layers[layers.length - 2]) nodes[id].flash = Math.max(nodes[id].flash, 0.9);
-        }
+      const f = dt * 0.06;
+      for (const q of puffs) {
+        if (q.delay > 0) { q.delay -= dt; continue; }
+        // Drag, a turbulent field and a sideways curl so the gas swirls into wisps as it spreads.
+        q.vx *= Math.pow(0.984, f); q.vy *= Math.pow(0.984, f);
+        q.vx += Math.sin(q.y * 0.006 + time * 0.0009 + q.seed) * 0.03 * f - q.vy * q.curl * f;
+        q.vy += Math.cos(q.x * 0.006 + time * 0.0011 + q.seed) * 0.03 * f + q.vx * q.curl * f - 0.005 * f;
+        q.x += q.vx * f; q.y += q.vy * f;
+        q.life -= dt;
       }
-      nebulae = nebulae.filter((nb) => nb.age < NEB_LIFE + 500);
+      puffs = puffs.filter((q) => q.life > 0);
+      for (const e of embers) {
+        e.vx *= Math.pow(0.97, f); e.vy *= Math.pow(0.97, f); e.vy -= 0.003 * f;
+        e.x += e.vx * f; e.y += e.vy * f; e.life -= dt;
+      }
+      embers = embers.filter((e) => e.life > 0);
     };
 
     const draw = () => {
@@ -241,7 +258,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         const n = nodes[o.node];
         const gr = Math.max(w, h) * (0.12 + o.charge * 0.14);
         const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, gr);
-        g.addColorStop(0, `rgba(${ORANGE},${0.06 + o.charge * 0.14})`);
+        g.addColorStop(0, `rgba(${ORANGE},${0.03 + o.charge * 0.08})`);
         g.addColorStop(1, `rgba(${ORANGE},0)`);
         ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
       }
@@ -296,103 +313,27 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         ctx.beginPath(); ctx.arc(n.x, n.y, base + n.flash * 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
 
-      // Nebulae: bloom outward, hold and drift, then swirl and collapse back in.
+      // Gas: soft puffs that billow out, cool from hot white-orange to ember red, and thin away.
       ctx.globalCompositeOperation = 'lighter';
-      ctx.lineCap = 'round';
-      const Rmax = compact ? Math.min(100, w * 0.26) : Math.min(165, h * 0.24);
-      for (const nb of nebulae) {
-        const t = nb.age;
-        let scale: number, alpha: number, rot: number;
-        if (t < NEB_EXPAND) {
-          const p = t / NEB_EXPAND;
-          scale = 1 - Math.pow(1 - p, 3);
-          alpha = Math.min(1, t / 350);
-          rot = 0;
-        } else if (t < NEB_EXPAND + NEB_HOLD) {
-          const p = (t - NEB_EXPAND) / NEB_HOLD;
-          scale = 1 + p * 0.06; alpha = 1; rot = p * 0.05;
-        } else if (t < NEB_LIFE) {
-          const p = (t - NEB_EXPAND - NEB_HOLD) / NEB_COLLAPSE;
-          scale = 1.06 * (1 - p * p * (3 - 2 * p));
-          alpha = 1 - p * 0.3;
-          rot = 0.05 + p * p * 2.4;
-        } else {
-          // Afterglow: a small bright core that fades out gently.
-          const p = (t - NEB_LIFE) / 500;
-          const R = 10 + 8 * (1 - p);
-          const core = ctx.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, R);
-          core.addColorStop(0, `rgba(190,240,255,${0.5 * (1 - p)})`);
-          core.addColorStop(1, 'rgba(120,220,255,0)');
-          ctx.fillStyle = core; ctx.beginPath(); ctx.arc(nb.x, nb.y, R, 0, Math.PI * 2); ctx.fill();
-          continue;
-        }
-        const R = Math.max(2, Rmax * scale);
-        const spin = rot * nb.spin;
-        const P = (a: number, d: number): [number, number] => {
-          // Inner material swirls faster during the collapse.
-          const aa = a + spin * (1.4 - d * 0.6);
-          return [nb.x + Math.cos(aa) * d * R, nb.y + Math.sin(aa) * d * R * 0.86];
-        };
-
-        // Outer orange-red shell haze.
-        const shell = ctx.createRadialGradient(nb.x, nb.y, R * 0.35, nb.x, nb.y, R * 1.15);
-        shell.addColorStop(0, `rgba(${ORANGE},0)`);
-        shell.addColorStop(0.7, `rgba(220,90,40,${0.12 * alpha})`);
-        shell.addColorStop(1, 'rgba(180,50,30,0)');
-        ctx.fillStyle = shell; ctx.beginPath(); ctx.arc(nb.x, nb.y, R * 1.15, 0, Math.PI * 2); ctx.fill();
-
-        // Cyan lobes in the core.
-        for (const lb of nb.lobes) {
-          const [lx, ly] = P(lb.a, lb.d);
-          const lr = lb.r * R;
-          const inner = lb.d < 0.4;
-          const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, lr);
-          g.addColorStop(0, inner ? `rgba(150,225,255,${0.22 * alpha})` : `rgba(240,120,60,${0.13 * alpha})`);
-          g.addColorStop(0.6, inner ? `rgba(90,190,220,${0.08 * alpha})` : `rgba(200,80,40,${0.05 * alpha})`);
-          g.addColorStop(1, 'rgba(90,190,220,0)');
-          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(lx, ly, lr, 0, Math.PI * 2); ctx.fill();
-        }
-
-        // Filaments: cyan near the core, through gold-green, to orange-red at the rim.
-        for (const f of nb.fils) {
-          for (let k = 1; k < f.pts.length; k++) {
-            const [a0, d0] = f.pts[k - 1], [a1, d1] = f.pts[k];
-            const [x0, y0] = P(a0, d0), [x1, y1] = P(a1, d1);
-            const d = (d0 + d1) / 2;
-            const col = d < 0.35 ? '160,230,255' : d < 0.6 ? '200,215,140' : d < 0.85 ? '255,150,70' : '230,80,40';
-            ctx.strokeStyle = `rgba(${col},${(0.45 - d * 0.15) * alpha})`;
-            ctx.lineWidth = f.w * (0.6 + scale * 0.6);
-            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-          }
-        }
-
-        // Fine web of threads between filaments.
-        ctx.lineWidth = 0.7;
-        for (const ar of nb.arcs) {
-          const col = ar.d < 0.5 ? '170,230,250' : '255,140,80';
-          ctx.strokeStyle = `rgba(${col},${0.22 * alpha})`;
-          ctx.beginPath();
-          for (let k = 0; k <= 6; k++) {
-            const [x, y] = P(ar.a + (ar.span * k) / 6, ar.d + Math.sin(k) * 0.02);
-            if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-          }
-          ctx.stroke();
-        }
-
-        // Embedded stars.
-        for (const st of nb.stars) {
-          const [x, y] = P(st.a, st.d);
-          ctx.fillStyle = `rgba(235,245,255,${0.7 * alpha})`;
-          ctx.beginPath(); ctx.arc(x, y, st.s, 0, Math.PI * 2); ctx.fill();
-        }
-
-        // Pulsar core.
-        const cr = 6 + R * 0.12;
-        const core = ctx.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, cr);
-        core.addColorStop(0, `rgba(225,250,255,${0.55 * alpha})`);
-        core.addColorStop(1, 'rgba(120,220,255,0)');
-        ctx.fillStyle = core; ctx.beginPath(); ctx.arc(nb.x, nb.y, cr, 0, Math.PI * 2); ctx.fill();
+      for (const q of puffs) {
+        if (q.delay > 0) continue;
+        const age = q.max - q.life;
+        const k = age / q.max; // 0 → 1 over the puff's life
+        const fadeIn = Math.min(1, age / 450);
+        const a = fadeIn * Math.pow(1 - k, 1.4) * 0.075;
+        if (a < 0.002) continue;
+        const r = q.r + (q.r1 - q.r) * (1 - Math.pow(1 - k, 2));
+        const ti = Math.min(3, Math.floor(k * 2.6 + 0.6 + q.tone * 1.2));
+        ctx.globalAlpha = a;
+        ctx.drawImage(tones[ti], q.x - r, q.y - r, r * 2, r * 2);
       }
+      for (const e of embers) {
+        const k = e.life / e.max;
+        ctx.globalAlpha = k * 0.85;
+        ctx.fillStyle = k > 0.6 ? '#FFD9C4' : `rgb(${HOT})`;
+        ctx.beginPath(); ctx.arc(e.x, e.y, 0.6 + k * 1.2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
     };
 
