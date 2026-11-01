@@ -23,6 +23,8 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop } from 're
 
 const ORANGE = '232,80,26';
 const HOT = '255,122,69';
+const BLUE = '110,180,255'; // electrons and firing neurons
+const ICE = '205,232,255';
 const STEEL = '214,220,224';
 const MIN_BURST_GAP = 6000; // ms between any two bursts
 const OUTPUT_COOLDOWN = 1200; // ms an output rests after bursting
@@ -121,7 +123,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
     let time = 0;
     let raf = 0, running = true, visible = true, last = performance.now();
     const mouse = { x: -9999, y: -9999, on: false };
-    const CHARGE_PER_HIT = compact ? 0.07 : 0.05;
+    const CHARGE_PER_HIT = compact ? 0.16 : 0.11;
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
@@ -169,9 +171,13 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       return c;
     };
     // cream (inner edge) → amber → orange → red (outer shell)
+    // Full Crab-Nebula palette, inner to outer.
     const tones = [
-      sprite('255,232,200', false), sprite('255,232,200', true),
-      sprite('255,170,100', true), sprite(HOT, false), sprite('235,70,35', true), sprite('200,40,30', false),
+      sprite('120,210,255', false), sprite('90,160,255', true), // cyan, blue core
+      sprite('80,220,200', true), sprite('150,225,140', false), // teal, green
+      sprite('235,225,140', true), sprite('255,232,200', false), // gold, cream
+      sprite('255,150,70', true), sprite(HOT, false), // amber, orange
+      sprite('235,60,35', true), sprite('205,50,120', false), // red, magenta
     ];
 
     const burst = (o: Out) => {
@@ -185,8 +191,10 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         const g = (rand() + rand() + rand() - 1.5) / 1.5;
         const inner = rand() < 0.12;
         const off = inner ? 0.55 + rand() * 0.35 : 1 + g * 0.11;
-        const tone = off < 0.9 ? (rand() < 0.5 ? 0 : 1) : off < 0.98 ? 1 + Math.floor(rand() * 2) : off < 1.08 ? 2 + Math.floor(rand() * 3) : 4 + Math.floor(rand() * 2);
-        motes.push({ a: rand() * Math.PI * 2, off, size: 3 + Math.pow(rand(), 1.8) * (compact ? 16 : 26), tone: Math.min(5, tone), seed: rand() * 100, bright: 0.5 + rand() * 0.5 });
+        // Map distance through the shell onto the palette, with a little mixing.
+        const band = Math.max(0, Math.min(1, (off - 0.82) / 0.36)) * 9 + (rand() - 0.5) * 2.2;
+        const tone = Math.max(0, Math.min(9, Math.round(band)));
+        motes.push({ a: rand() * Math.PI * 2, off, size: 3 + Math.pow(rand(), 1.8) * (compact ? 16 : 26), tone, seed: rand() * 100, bright: 0.5 + rand() * 0.5 });
       }
       waves.push({ x: n.x, y: n.y, age: 0, reach, motes });
       for (const id of layers[layers.length - 2]) nodes[id].flash = Math.max(nodes[id].flash, 0.7);
@@ -208,7 +216,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       }
 
       fireClock += dt;
-      const interval = compact ? 110 : 60;
+      const interval = compact ? 300 : 170;
       while (fireClock > interval) {
         fireClock -= interval;
         const input = layers[0][Math.floor(rand() * layers[0].length)];
@@ -222,12 +230,12 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       for (const e of current) {
         const a = nodes[e.from], b = nodes[e.to];
         const len = Math.max(30, Math.hypot(b.x - a.x, b.y - a.y));
-        e.t += (dt * 0.32 * e.speed) / len;
+        e.t += (dt * 0.15 * e.speed) / len;
         if (e.t < 1) { keep.push(e); continue; }
         nodes[e.to].flash = 1;
         const o = outOf(e.to);
         if (o) { if (o.rest <= 0) o.charge = Math.min(1, o.charge + CHARGE_PER_HIT); }
-        else { emit(e.to); if (rand() < 0.12) emit(e.to); }
+        else { emit(e.to); if (rand() < 0.06) emit(e.to); }
       }
       electrons = keep.concat(electrons);
       if (electrons.length > 320) electrons = electrons.slice(-320);
@@ -275,7 +283,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
             if (md < 160) alpha += (1 - md / 160) * 0.18;
           }
           const heat = Math.min(a.flash, b.flash);
-          ctx.strokeStyle = heat > 0.1 ? `rgba(${HOT},${alpha + heat * 0.3})` : `rgba(${STEEL},${alpha})`;
+          ctx.strokeStyle = heat > 0.1 ? `rgba(${BLUE},${alpha + heat * 0.25})` : `rgba(${STEEL},${alpha})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
@@ -283,16 +291,16 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       for (const e of electrons) {
         const a = nodes[e.from], b = nodes[e.to];
         const x = a.x + (b.x - a.x) * e.t, y = a.y + (b.y - a.y) * e.t;
-        const tt = Math.max(0, e.t - 0.22);
+        const tt = Math.max(0, e.t - 0.18);
         const tx = a.x + (b.x - a.x) * tt, ty = a.y + (b.y - a.y) * tt;
         const tail = ctx.createLinearGradient(tx, ty, x, y);
-        tail.addColorStop(0, `rgba(${HOT},0)`); tail.addColorStop(1, `rgba(${HOT},0.95)`);
+        tail.addColorStop(0, `rgba(${BLUE},0)`); tail.addColorStop(1, `rgba(${BLUE},0.9)`);
         ctx.strokeStyle = tail; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(x, y); ctx.stroke();
         const halo = ctx.createRadialGradient(x, y, 0, x, y, 4.5);
-        halo.addColorStop(0, `rgba(${HOT},0.5)`); halo.addColorStop(1, `rgba(${ORANGE},0)`);
+        halo.addColorStop(0, `rgba(${BLUE},0.55)`); halo.addColorStop(1, `rgba(${BLUE},0)`);
         ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#FFE1D3'; ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgb(${ICE})`; ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
       }
 
       for (const n of nodes) {
@@ -303,12 +311,14 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
           const rr = o ? 10 + c * 18 : 3 + n.flash * 8;
           const a = o ? 0.25 + c * 0.45 : 0.5 * n.flash;
           const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, rr);
-          gl.addColorStop(0, `rgba(${HOT},${a})`); gl.addColorStop(1, `rgba(${ORANGE},0)`);
+          const gc = o ? HOT : BLUE;
+          gl.addColorStop(0, `rgba(${gc},${a})`); gl.addColorStop(1, `rgba(${gc},0)`);
           ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, Math.PI * 2); ctx.fill();
         }
         const lit = n.flash > 0.3 || !!o;
-        ctx.strokeStyle = lit ? `rgba(${HOT},0.95)` : `rgba(${STEEL},0.45)`;
-        ctx.fillStyle = lit ? `rgba(${HOT},${o ? 0.6 + c * 0.35 : 0.85})` : '#151515';
+        const lc = o ? HOT : BLUE;
+        ctx.strokeStyle = lit ? `rgba(${lc},0.95)` : `rgba(${STEEL},0.45)`;
+        ctx.fillStyle = lit ? `rgba(${lc},${o ? 0.6 + c * 0.35 : 0.85})` : '#151515';
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(n.x, n.y, base + n.flash * 0.8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
@@ -324,11 +334,14 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         const thick = 0.12 + p * 0.08;
 
         const haze = ctx.createRadialGradient(wv.x, wv.y, R * (1 - thick * 1.6), wv.x, wv.y, R * (1 + thick));
-        haze.addColorStop(0, 'rgba(255,220,190,0)');
-        haze.addColorStop(0.45, `rgba(255,225,195,${0.22 * env})`);
-        haze.addColorStop(0.62, `rgba(255,150,90,${0.3 * env})`);
-        haze.addColorStop(0.8, `rgba(230,55,30,${0.32 * env})`);
-        haze.addColorStop(1, 'rgba(200,40,30,0)');
+        haze.addColorStop(0, 'rgba(90,170,255,0)');
+        haze.addColorStop(0.3, `rgba(100,190,255,${0.18 * env})`);
+        haze.addColorStop(0.44, `rgba(80,210,190,${0.16 * env})`);
+        haze.addColorStop(0.56, `rgba(220,220,140,${0.2 * env})`);
+        haze.addColorStop(0.68, `rgba(255,150,80,${0.28 * env})`);
+        haze.addColorStop(0.82, `rgba(230,55,40,${0.28 * env})`);
+        haze.addColorStop(0.92, `rgba(190,50,120,${0.14 * env})`);
+        haze.addColorStop(1, 'rgba(160,40,120,0)');
         ctx.fillStyle = haze; ctx.fillRect(0, 0, w, h);
 
         const grow = 0.55 + p * 0.9;
