@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import Svg, { Circle, Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
+import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
+import Svg, { Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 
 /**
  * "Escaping intelligence" hero animation.
@@ -10,12 +10,12 @@ import Svg, { Circle, Defs, G, LinearGradient, Path, Rect, Stop } from 'react-na
  * the whole hero. As the nebula clouds thin, the brain reassembles out of the
  * haze, and the cycle starts again (~14 s).
  *
- * The brain is generated procedurally (no image assets).
+ * The brain is drawn from vector outlines (lobes, cerebellum, brainstem, fissures)
+ * and sampled into points along the outline and the meandering gyri.
  *
  * Photosensitivity safeguards (WCAG 2.3.1 / 2.2.2):
  *  - one nebula per ~14 s cycle (limit is 3 flashes per second)
  *  - nebula brightens over ~0.8 s and fades over several seconds; no strobing
- *  - visible pause control; choice remembered per browser
  *  - honours prefers-reduced-motion with a still frame
  *  - pauses off-screen and in background tabs
  */
@@ -31,7 +31,6 @@ const REFORM_END = BURST_AT + 6400;
 // Crab-Nebula palette, inner to outer.
 const NEB = ['120,210,255', '90,160,255', '80,220,200', '150,225,140', '235,225,140', '255,232,200', '255,150,70', '255,122,69', '235,60,35', '205,50,120'];
 
-type P3 = { x: number; y: number; z: number; c: string; b: number; sx: number; sy: number };
 type Streak = { x: number; y: number; dx: number; dy: number; v: number; c: string; w: number };
 type Mote = { a: number; off: number; size: number; tone: number; seed: number; bright: number };
 type Cloud = { a: number; d: number; r: number; tone: number; seed: number };
@@ -41,49 +40,74 @@ function seeded(seed: number) {
   return () => ((s = (s * 16807) % 2147483647) - 1) / 2147483646;
 }
 
-const inEllipse = (x: number, y: number, cx: number, cy: number, rx: number, ry: number) =>
-  ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 < 1;
+// Side-view brain (front to the left), drawn in a 400×300 box.
+const CEREBRUM =
+  'M78 196 C52 186 38 160 42 132 C44 104 58 82 80 68 C96 50 118 38 142 34 C160 24 186 20 208 24 ' +
+  'C230 16 258 18 278 28 C302 30 326 42 342 60 C360 76 372 98 374 122 C380 146 374 170 360 186 ' +
+  'C352 198 338 206 322 208 C300 206 280 200 262 196 C246 204 228 210 208 212 C186 220 160 222 138 216 ' +
+  'C116 214 96 208 78 196 Z';
+const TEMPORAL =
+  'M112 206 C138 192 176 184 214 184 C240 184 258 190 266 200 C262 220 246 236 222 242 ' +
+  'C196 248 166 244 144 236 C126 230 114 220 112 206 Z';
+const CEREBELLUM =
+  'M262 204 C282 196 312 196 334 204 C352 212 360 228 354 244 C346 260 324 270 300 268 ' +
+  'C278 266 262 256 256 240 C252 226 254 212 262 204 Z';
+const STEM = 'M224 236 C236 238 248 240 256 244 C254 262 250 282 246 298 L226 298 C226 280 226 258 224 236 Z';
+const SULCI = [
+  'M118 214 C150 200 186 190 220 186 C240 184 256 176 268 162', // lateral (Sylvian) fissure
+  'M214 26 C206 52 216 74 204 98 C196 116 206 136 198 158 C194 170 198 180 196 186', // central sulcus
+  'M300 40 C292 70 306 92 298 120 C292 140 300 160 296 190', // parieto-occipital
+];
 
-/** Point cloud in a side-view brain silhouette (front to the left), with fold texture and depth. */
-function buildBrain(count: number, rand: () => number): P3[] {
-  const pts: P3[] = [];
+type BrainPoint = { x: number; y: number; z: number; c: string; b: number; sx: number; sy: number };
+
+/** Rasterise the brain shape once, then sample points: dense on the outline, fissures and gyri. */
+function buildBrain(count: number, rand: () => number): BrainPoint[] {
+  const W = 400, H = 300;
+  const layer = (draw: (g: CanvasRenderingContext2D) => void) => {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#fff'; g.strokeStyle = '#fff'; g.lineJoin = 'round'; g.lineCap = 'round';
+    draw(g);
+    const d = g.getImageData(0, 0, W, H).data;
+    return (x: number, y: number) => d[((y | 0) * W + (x | 0)) * 4 + 3] > 128;
+  };
+  const cere = layer((g) => { g.fill(new Path2D(CEREBRUM)); g.fill(new Path2D(TEMPORAL)); });
+  const cbl = layer((g) => g.fill(new Path2D(CEREBELLUM)));
+  const stem = layer((g) => g.fill(new Path2D(STEM)));
+  const edge = layer((g) => {
+    g.lineWidth = 3.2;
+    [CEREBRUM, TEMPORAL, CEREBELLUM, STEM].forEach((p) => g.stroke(new Path2D(p)));
+  });
+  const fissure = layer((g) => { g.lineWidth = 3; SULCI.forEach((p) => g.stroke(new Path2D(p))); });
+
+  // Meandering gyri: contour lines of a smooth field.
+  const gyri = (x: number, y: number) => {
+    const f = Math.sin(x * 0.085 + Math.sin(y * 0.06) * 2.4) + Math.sin(y * 0.1 + Math.sin(x * 0.055) * 2.2) + 0.6 * Math.sin((x - y) * 0.07 + 1.3);
+    return Math.abs(f) < 0.16 || Math.abs(f - 1.1) < 0.12 || Math.abs(f + 1.1) < 0.12;
+  };
+  const folia = (x: number, y: number) => Math.abs(Math.sin(y * 0.55 + Math.sin(x * 0.07) * 1.6)) < 0.3;
+
+  const pts: BrainPoint[] = [];
   let guard = 0;
-  while (pts.length < count && guard++ < count * 40) {
-    const x = rand() * 2.1 - 1.05;
-    const y = rand() * 1.75 - 0.8;
-    const cerebrum = inEllipse(x, y, 0, -0.08, 1, 0.62) && !(x > 0.15 && y > 0.2);
-    const temporal = inEllipse(x, y, -0.1, 0.26, 0.56, 0.2);
-    const cerebellum = inEllipse(x, y, 0.58, 0.36, 0.34, 0.2);
-    const stem = inEllipse(x, y, 0.28, 0.6, 0.1, 0.26);
-    if (!(cerebrum || temporal || cerebellum || stem)) continue;
+  while (pts.length < count && guard++ < count * 60) {
+    const x = rand() * W, y = rand() * H;
+    let keep = 0, bright = 0.45;
+    if (edge(x, y)) { keep = 0.95; bright = 0.85; }
+    else if (fissure(x, y)) { keep = 0.9; bright = 0.8; }
+    else if (cbl(x, y) && !cere(x, y)) { const on = folia(x, y); keep = on ? 0.85 : 0.05; bright = on ? 0.7 : 0.35; }
+    else if (cere(x, y)) { const on = gyri(x, y); keep = on ? 0.85 : 0.04; bright = on ? 0.72 : 0.35; }
+    else if (stem(x, y)) { keep = 0.4; bright = 0.4; }
+    if (!keep || rand() > keep) continue;
 
-    // Gyri: favour points along wavy fold lines (cerebellum gets finer horizontal folds).
-    const fold = cerebellum && !cerebrum
-      ? Math.sin(y * 70 + Math.sin(x * 9) * 2)
-      : Math.sin(x * 11 + Math.sin(y * 7) * 2.2) * Math.sin(y * 12 + Math.sin(x * 8) * 2);
-    if (!stem && Math.abs(fold) > 0.3 && rand() < 0.88) continue;
-
-    // Depth: most points near the surface so the shape reads as solid.
-    const half = cerebrum ? 0.72 * Math.sqrt(Math.max(0, 1 - x * x - ((y + 0.08) / 0.62) ** 2)) : stem ? 0.1 : 0.38;
-    const z = (rand() < 0.5 ? -1 : 1) * half * (0.7 + 0.3 * rand());
-
+    const nx = (x - 205) / 175, ny = (y - 160) / 175;
+    const half = 0.6 * Math.sqrt(Math.max(0, 1 - nx * nx - (ny * 1.4) ** 2)) + 0.06;
+    const z = (rand() - 0.5) * 2 * half;
     const r = rand();
-    const c = r < 0.06 ? '255,150,90' : r < 0.1 ? '230,120,200' : r < 0.4 ? '150,215,255' : '95,160,255';
-    const ang = rand() * Math.PI * 2;
-    const sc = 0.4 + rand() * 0.9;
-    pts.push({ x, y, z, c, b: 0.35 + rand() * 0.65, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
-  }
-  // Outline: a denser rim so the silhouette reads clearly.
-  const rim = Math.round(count * 0.18);
-  for (let i = 0; i < rim; i++) {
-    const t = rand() * Math.PI * 2;
-    let x = Math.cos(t), y = -0.08 + Math.sin(t) * 0.62;
-    if (x > 0.15 && y > 0.2) { // swap the lower-back arc for the cerebellum's outline
-      const u = rand() * Math.PI * 2; x = 0.58 + Math.cos(u) * 0.34; y = 0.36 + Math.sin(u) * 0.2;
-      if (y < 0.3) continue;
-    }
-    const ang = rand() * Math.PI * 2;
-    pts.push({ x, y, z: (rand() - 0.5) * 0.25, c: rand() < 0.5 ? '150,215,255' : '95,160,255', b: 0.5 + rand() * 0.5, sx: Math.cos(ang), sy: Math.sin(ang) });
+    const c = r < 0.05 ? '255,150,90' : r < 0.09 ? '230,120,200' : r < 0.42 ? '150,215,255' : '95,160,255';
+    const ang = rand() * Math.PI * 2, sc = 0.4 + rand() * 0.9;
+    pts.push({ x: nx, y: ny, z, c, b: bright * (0.6 + rand() * 0.4) + 0.1, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
   }
   return pts;
 }
@@ -106,19 +130,6 @@ function usePrefersReducedMotion() {
   return reduce;
 }
 
-const PAUSE_KEY = 'oivuni-hero-paused';
-function useUserPaused(): [boolean, (v: boolean) => void] {
-  const [paused, setPaused] = useState(false);
-  useEffect(() => {
-    try { if (window.localStorage.getItem(PAUSE_KEY) === '1') setPaused(true); } catch {}
-  }, []);
-  const set = (v: boolean) => {
-    setPaused(v);
-    try { window.localStorage.setItem(PAUSE_KEY, v ? '1' : '0'); } catch {}
-  };
-  return [paused, set];
-}
-
 const ease = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
 const smooth = (t: number) => { const u = Math.max(0, Math.min(1, t)); return u * u * (3 - 2 * u); };
 
@@ -131,7 +142,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     if (!canvas || !ctx) return;
 
     const rand = seeded(23);
-    const brain = buildBrain(compact ? 2800 : 5200, rand);
+    const brain = buildBrain(compact ? 4200 : 8000, rand);
     let w = 0, h = 0, cx = 0, cy = 0, S = 1;
     let streaks: Streak[] = [];
     let motes: Mote[] = [];
@@ -192,7 +203,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       }
     };
 
-    const rotation = () => Math.sin(time * 0.00018) * 0.4 + (mouse.on ? (mouse.x - 0.5) * 0.5 : 0);
+    const rotation = () => Math.sin(time * 0.00018) * 0.18 + (mouse.on ? (mouse.x - 0.5) * 0.2 : 0);
 
     // Brain visibility and reassembly through the cycle.
     const brainState = () => {
@@ -259,7 +270,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       if (ba > 0.01) {
         const th = rotation(), cs = Math.cos(th), sn = Math.sin(th);
         const scatter = (1 - gather) * S * 0.9;
-        const dim = (compact ? 0.6 : 0.85) * ba * (1 + surgeP * 0.45);
+        const dim = (compact ? 0.7 : 0.95) * ba * (1 + surgeP * 0.45);
         for (const p of brain) {
           const xr = p.x * cs - p.z * sn;
           const zr = p.x * sn + p.z * cs;
@@ -386,44 +397,24 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
   });
 }
 
-/** Native: a still of the brain point cloud. */
+/** Native: the brain outline as a still. */
 function StaticBrain({ compact }: { compact: boolean }) {
-  const pts = buildBrain(700, seeded(23));
-  const cx = compact ? 500 : 680, cy = compact ? 320 : 296, S = compact ? 230 : 250;
   return (
-    <Svg width="100%" height="100%" viewBox="0 0 1000 570" preserveAspectRatio="xMidYMid slice" style={StyleSheet.absoluteFill}>
-      <G>{pts.map((p, i) => <Circle key={i} cx={cx + p.x * S} cy={cy + p.y * S} r={1.3} fill={`rgb(${p.c})`} fillOpacity={p.b * 0.55} />)}</G>
+    <Svg width="100%" height="100%" viewBox={compact ? '-100 -60 600 420' : '-520 -40 960 440'} preserveAspectRatio="xMidYMid slice" style={StyleSheet.absoluteFill}>
+      <G fill="none" stroke="rgb(110,170,255)" strokeOpacity={0.45} strokeWidth={1.5}>
+        {[CEREBRUM, TEMPORAL, CEREBELLUM, STEM, ...SULCI].map((d, i) => <Path key={i} d={d} />)}
+      </G>
     </Svg>
-  );
-}
-
-function PauseButton({ paused, onPress }: { paused: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={paused ? 'Play background animation' : 'Pause background animation'}
-      style={(state) => {
-        const st = state as { hovered?: boolean; focused?: boolean };
-        return [styles.pause, (st.hovered || st.focused) && styles.pauseActive];
-      }}
-    >
-      <Svg width={12} height={12} viewBox="0 0 12 12">
-        {paused ? <Path d="M3 1.5v9l7.5-4.5z" fill="#F4F4F4" /> : <Path d="M3 1.5h2v9H3zM7 1.5h2v9H7z" fill="#F4F4F4" />}
-      </Svg>
-      <Text style={styles.pauseText}>{paused ? 'Play' : 'Pause'}</Text>
-    </Pressable>
   );
 }
 
 export function HeroBackground({ compact }: { compact: boolean }) {
   const reduceMotion = usePrefersReducedMotion();
-  const [userPaused, setUserPaused] = useUserPaused();
   const web = Platform.OS === 'web';
   return (
     <>
       <View pointerEvents="none" accessible={false} style={StyleSheet.absoluteFill}>
-        {web ? <CanvasBrain compact={compact} still={reduceMotion || userPaused} /> : <StaticBrain compact={compact} />}
+        {web ? <CanvasBrain compact={compact} still={reduceMotion} /> : <StaticBrain compact={compact} />}
         {/* Scrim behind the copy column keeps text readable even at the nebula's peak. */}
         <Svg width="100%" height="100%" viewBox="0 0 1000 570" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
           <Defs>
@@ -436,27 +427,6 @@ export function HeroBackground({ compact }: { compact: boolean }) {
           <Rect width="1000" height="570" fill="url(#textScrim)" />
         </Svg>
       </View>
-      {web && !reduceMotion ? <PauseButton paused={userPaused} onPress={() => setUserPaused(!userPaused)} /> : null}
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  pause: {
-    position: 'absolute',
-    right: 16,
-    bottom: 16,
-    zIndex: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(244,244,244,0.25)',
-    backgroundColor: 'rgba(17,17,17,0.6)',
-  },
-  pauseActive: { borderColor: 'rgba(244,244,244,0.7)' },
-  pauseText: { color: '#F4F4F4', fontSize: 12, fontFamily: 'Inter_500Medium' },
-});
