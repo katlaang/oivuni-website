@@ -6,6 +6,7 @@ import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from '@expo-goog
 import { colors, fonts, MAX_WIDTH } from './src/theme';
 import { Logo, Mark } from './src/components/Logo';
 import { PartnerIcon } from './src/components/Icons';
+import { HeroBackground } from './src/components/HeroBackground';
 import { about, approach, contact, CONTACT_EMAIL, hero, nav, partners, pillars, principles, programs, type SectionId } from './src/content';
 
 export default function App() {
@@ -54,8 +55,9 @@ export default function App() {
         </View>
 
         {/* Hero */}
-        <View onLayout={mark('top')} style={{ backgroundColor: colors.ink }}>
-          <Container style={{ paddingTop: narrow ? 80 : 120, paddingBottom: narrow ? 88 : 128, gap: 32 }}>
+        <View onLayout={mark('top')} style={{ backgroundColor: colors.ink, overflow: 'hidden', position: 'relative' }}>
+          <HeroBackground compact={narrow} />
+          <Container style={{ paddingTop: narrow ? 80 : 120, paddingBottom: narrow ? 88 : 128, gap: 32, position: 'relative' }}>
             <Text style={[s.eyebrow, { color: colors.accentOnDark }]}>{hero.eyebrow}</Text>
             <Text accessibilityRole="header" aria-level={1} style={[s.h1, { fontSize: h1, lineHeight: h1 * 1.04, maxWidth: 960 }]}>
               {hero.title}
