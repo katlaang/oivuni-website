@@ -7,14 +7,15 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop } from 're
  *
  * Electrons fire from the input layer (left, "research"), travel through the
  * hidden layers and converge on several output neurons (right, "real-world
- * innovation"). Each output charges independently; when full it bursts and the
- * energy disperses as glowing gas that billows, curls and thins into the dark.
+ * innovation"). Each output charges independently; when full it releases a
+ * nebula shockwave — a ring of soft glowing particles (cream inner edge, orange
+ * and red outer shell) that sweeps across the whole hero and dissolves.
  * Bursts are staggered so only one happens at a time.
  *
  * Photosensitivity safeguards (WCAG 2.3.1 / 2.2.2):
- *  - at most one burst every 3 s (limit is 3 flashes per second)
- *  - the gas fades in over ~0.25 s and thins out over ~4 s at low opacity;
- *    no full-screen flash, no strobing
+ *  - at most one burst every 6 s (limit is 3 flashes per second)
+ *  - the shockwave brightens over ~0.6 s and fades over ~3 s; it is a slow,
+ *    moving ring with a dark centre — no full-screen flash, no strobing
  *  - visible pause control; choice is remembered per browser
  *  - honours prefers-reduced-motion with a still frame
  *  - pauses off-screen and in background tabs
@@ -23,15 +24,16 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop } from 're
 const ORANGE = '232,80,26';
 const HOT = '255,122,69';
 const STEEL = '214,220,224';
-const MIN_BURST_GAP = 3000; // ms between any two bursts
+const MIN_BURST_GAP = 6000; // ms between any two bursts
 const OUTPUT_COOLDOWN = 1200; // ms an output rests after bursting
-const GAS_LIFE = 4200; // ms until a burst's gas has fully dispersed
+const WAVE_EXPAND = 3400; // ms for the shockwave to reach the far corner
+const WAVE_LIFE = 5600; // ms until it has fully dissolved
 
 type N = { x: number; y: number; bx: number; by: number; ph: number; layer: number; flash: number };
 type Electron = { from: number; to: number; t: number; speed: number };
-type Puff = { x: number; y: number; vx: number; vy: number; r: number; r1: number; life: number; max: number; seed: number; tone: number; delay: number; curl: number };
+type Mote = { a: number; off: number; size: number; tone: number; seed: number; bright: number };
+type Wave = { x: number; y: number; age: number; reach: number; motes: Mote[] };
 type Dust = { x: number; y: number; vx: number; vy: number; a: number };
-type Ember = { x: number; y: number; vx: number; vy: number; life: number; max: number };
 type Out = { node: number; charge: number; rest: number };
 
 function seeded(seed: number) {
@@ -40,21 +42,21 @@ function seeded(seed: number) {
 }
 
 function layerSizes(compact: boolean) {
-  return compact ? [5, 6, 6, 5, 2] : [7, 9, 10, 9, 7, 3];
+  return compact ? [6, 8, 9, 8, 3] : [9, 12, 13, 13, 12, 9, 3];
 }
 
-/** Evenly balanced layout: every hidden layer spans the same height; outputs sit in the middle half. */
+/** Edge-to-edge layout: layers span the full hero height; outputs sit in the middle. */
 function buildNetwork(w: number, h: number, compact: boolean, rand: () => number) {
   const sizes = layerSizes(compact);
   const nodes: N[] = [];
   const layers: number[][] = [];
-  const x0 = w * (compact ? 0.07 : 0.05);
-  const x1 = w * (compact ? 0.84 : 0.82);
+  const x0 = w * 0.012;
+  const x1 = w * (compact ? 0.9 : 0.92);
   const last = sizes.length - 1;
   sizes.forEach((count, li) => {
     const ids: number[] = [];
     const x = x0 + ((x1 - x0) * li) / last;
-    const span = h * (li === last ? (compact ? 0.4 : 0.5) : 0.76);
+    const span = h * (li === last ? (compact ? 0.6 : 0.62) : 0.97);
     for (let i = 0; i < count; i++) {
       const jitter = li === 0 || li === last ? 0 : (rand() - 0.5) * h * 0.04;
       const y = h / 2 - span / 2 + (span * i) / (count - 1) + jitter;
@@ -112,15 +114,14 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
     let layers: number[][] = [];
     let outs: Out[] = [];
     let electrons: Electron[] = [];
-    let puffs: Puff[] = [];
-    let embers: Ember[] = [];
+    let waves: Wave[] = [];
     let dust: Dust[] = [];
     let sinceBurst = MIN_BURST_GAP;
     let fireClock = 0;
     let time = 0;
     let raf = 0, running = true, visible = true, last = performance.now();
     const mouse = { x: -9999, y: -9999, on: false };
-    const CHARGE_PER_HIT = compact ? 0.09 : 0.07;
+    const CHARGE_PER_HIT = compact ? 0.07 : 0.05;
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
@@ -130,7 +131,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ({ nodes, layers } = buildNetwork(w, h, compact, rand));
       outs = layers[layers.length - 1].map((node, i) => ({ node, charge: 0.25 * i, rest: 0 }));
-      electrons = []; puffs = []; embers = [];
+      electrons = []; waves = [];
       const dustCount = Math.round((w * h) / (compact ? 5000 : 6500));
       dust = Array.from({ length: dustCount }, () => ({
         x: rand() * w, y: rand() * h, vx: 0.15 + rand() * 0.35, vy: (rand() - 0.5) * 0.12, a: 0.08 + rand() * 0.22,
@@ -149,42 +150,47 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       electrons.push({ from, to, t: 0, speed: 0.85 + rand() * 0.6 });
     };
 
-    // Soft round sprites, pre-rendered once, tinted per tone (hot core → orange → ember).
-    const sprite = (rgb: string) => {
+    // Soft bokeh sprites, pre-rendered once per colour.
+    const sprite = (rgb: string, rim: boolean) => {
       const c = document.createElement('canvas');
-      c.width = c.height = 128;
+      c.width = c.height = 96;
       const g = c.getContext('2d')!;
-      const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-      grad.addColorStop(0, `rgba(${rgb},1)`);
-      grad.addColorStop(0.4, `rgba(${rgb},0.45)`);
+      const grad = g.createRadialGradient(48, 48, 0, 48, 48, 48);
+      if (rim) {
+        grad.addColorStop(0, `rgba(${rgb},0.55)`);
+        grad.addColorStop(0.72, `rgba(${rgb},0.75)`);
+        grad.addColorStop(0.86, `rgba(${rgb},0.35)`);
+      } else {
+        grad.addColorStop(0, `rgba(${rgb},1)`);
+        grad.addColorStop(0.45, `rgba(${rgb},0.5)`);
+      }
       grad.addColorStop(1, `rgba(${rgb},0)`);
-      g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+      g.fillStyle = grad; g.fillRect(0, 0, 96, 96);
       return c;
     };
-    const tones = [sprite('255,196,150'), sprite(HOT), sprite(ORANGE), sprite('150,52,30')];
+    // cream (inner edge) → amber → orange → red (outer shell)
+    const tones = [
+      sprite('255,232,200', false), sprite('255,232,200', true),
+      sprite('255,170,100', true), sprite(HOT, false), sprite('235,70,35', true), sprite('200,40,30', false),
+    ];
 
     const burst = (o: Out) => {
       const n = nodes[o.node];
-      const PC = compact ? 80 : 140;
-      for (let i = 0; i < PC; i++) {
-        const ang = rand() * Math.PI * 2;
-        const sp = 0.5 + Math.pow(rand(), 0.5) * (compact ? 2.6 : 4);
-        const max = 2400 + rand() * (GAS_LIFE - 2400);
-        puffs.push({
-          x: n.x + (rand() - 0.5) * 8, y: n.y + (rand() - 0.5) * 8,
-          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp * 0.75,
-          r: 6 + rand() * 10, r1: (compact ? 40 : 60) + rand() * (compact ? 70 : 110),
-          life: max, max, seed: rand() * 1000, tone: rand(),
-          delay: Math.pow(rand(), 1.5) * 700, // gas streams out over ~0.7 s rather than all at once
-          curl: (rand() < 0.5 ? -1 : 1) * (0.004 + rand() * 0.01),
-        });
+      // Reach the farthest corner so the wave sweeps the whole hero.
+      const reach = Math.max(Math.hypot(n.x, n.y), Math.hypot(w - n.x, n.y), Math.hypot(n.x, h - n.y), Math.hypot(w - n.x, h - n.y)) * 1.05;
+      const MC = compact ? 480 : 950;
+      const motes: Mote[] = [];
+      for (let i = 0; i < MC; i++) {
+        // Gaussian-ish spread around the shell; a few stragglers inside.
+        const g = (rand() + rand() + rand() - 1.5) / 1.5;
+        const inner = rand() < 0.12;
+        const off = inner ? 0.55 + rand() * 0.35 : 1 + g * 0.11;
+        const tone = off < 0.9 ? (rand() < 0.5 ? 0 : 1) : off < 0.98 ? 1 + Math.floor(rand() * 2) : off < 1.08 ? 2 + Math.floor(rand() * 3) : 4 + Math.floor(rand() * 2);
+        motes.push({ a: rand() * Math.PI * 2, off, size: 3 + Math.pow(rand(), 1.8) * (compact ? 16 : 26), tone: Math.min(5, tone), seed: rand() * 100, bright: 0.5 + rand() * 0.5 });
       }
-      for (let i = 0; i < (compact ? 30 : 50); i++) {
-        const ang = rand() * Math.PI * 2, sp = 1 + rand() * 3.5, max = 900 + rand() * 1600;
-        embers.push({ x: n.x, y: n.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: max, max });
-      }
+      waves.push({ x: n.x, y: n.y, age: 0, reach, motes });
       for (const id of layers[layers.length - 2]) nodes[id].flash = Math.max(nodes[id].flash, 0.7);
-      o.charge = 0; o.rest = OUTPUT_COOLDOWN + 1500; sinceBurst = 0;
+      o.charge = 0; o.rest = OUTPUT_COOLDOWN + 2000; sinceBurst = 0;
     };
 
     const step = (dt: number) => {
@@ -202,7 +208,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       }
 
       fireClock += dt;
-      const interval = compact ? 150 : 85;
+      const interval = compact ? 110 : 60;
       while (fireClock > interval) {
         fireClock -= interval;
         const input = layers[0][Math.floor(rand() * layers[0].length)];
@@ -224,7 +230,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         else { emit(e.to); if (rand() < 0.12) emit(e.to); }
       }
       electrons = keep.concat(electrons);
-      if (electrons.length > 240) electrons = electrons.slice(-240);
+      if (electrons.length > 320) electrons = electrons.slice(-320);
 
       for (const o of outs) o.rest = Math.max(0, o.rest - dt);
       if (sinceBurst >= MIN_BURST_GAP) {
@@ -232,22 +238,16 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         if (ready.length) burst(ready[0]);
       }
 
-      const f = dt * 0.06;
-      for (const q of puffs) {
-        if (q.delay > 0) { q.delay -= dt; continue; }
-        // Drag, a turbulent field and a sideways curl so the gas swirls into wisps as it spreads.
-        q.vx *= Math.pow(0.984, f); q.vy *= Math.pow(0.984, f);
-        q.vx += Math.sin(q.y * 0.006 + time * 0.0009 + q.seed) * 0.03 * f - q.vy * q.curl * f;
-        q.vy += Math.cos(q.x * 0.006 + time * 0.0011 + q.seed) * 0.03 * f + q.vx * q.curl * f - 0.005 * f;
-        q.x += q.vx * f; q.y += q.vy * f;
-        q.life -= dt;
+      for (const wv of waves) {
+        wv.age += dt;
+        // Light up neurons as the wavefront passes over them.
+        const R = wv.reach * (1 - Math.pow(1 - Math.min(1, wv.age / WAVE_EXPAND), 2));
+        for (const n of nodes) {
+          const d = Math.hypot(n.x - wv.x, n.y - wv.y);
+          if (Math.abs(d - R) < 14) n.flash = Math.max(n.flash, 0.6);
+        }
       }
-      puffs = puffs.filter((q) => q.life > 0);
-      for (const e of embers) {
-        e.vx *= Math.pow(0.97, f); e.vy *= Math.pow(0.97, f); e.vy -= 0.003 * f;
-        e.x += e.vx * f; e.y += e.vy * f; e.life -= dt;
-      }
-      embers = embers.filter((e) => e.life > 0);
+      waves = waves.filter((wv) => wv.age < WAVE_LIFE);
     };
 
     const draw = () => {
@@ -269,7 +269,7 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       for (let li = 0; li < layers.length - 1; li++) {
         for (const i of layers[li]) for (const j of layers[li + 1]) {
           const a = nodes[i], b = nodes[j];
-          let alpha = 0.1;
+          let alpha = 0.085;
           if (mouse.on) {
             const md = Math.hypot((a.x + b.x) / 2 - mouse.x, (a.y + b.y) / 2 - mouse.y);
             if (md < 160) alpha += (1 - md / 160) * 0.18;
@@ -283,24 +283,24 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
       for (const e of electrons) {
         const a = nodes[e.from], b = nodes[e.to];
         const x = a.x + (b.x - a.x) * e.t, y = a.y + (b.y - a.y) * e.t;
-        const tt = Math.max(0, e.t - 0.28);
+        const tt = Math.max(0, e.t - 0.22);
         const tx = a.x + (b.x - a.x) * tt, ty = a.y + (b.y - a.y) * tt;
         const tail = ctx.createLinearGradient(tx, ty, x, y);
         tail.addColorStop(0, `rgba(${HOT},0)`); tail.addColorStop(1, `rgba(${HOT},0.95)`);
-        ctx.strokeStyle = tail; ctx.lineWidth = 1.8;
+        ctx.strokeStyle = tail; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(x, y); ctx.stroke();
-        const halo = ctx.createRadialGradient(x, y, 0, x, y, 9);
-        halo.addColorStop(0, `rgba(${HOT},0.6)`); halo.addColorStop(1, `rgba(${ORANGE},0)`);
-        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#FFE1D3'; ctx.beginPath(); ctx.arc(x, y, 1.7, 0, Math.PI * 2); ctx.fill();
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, 4.5);
+        halo.addColorStop(0, `rgba(${HOT},0.5)`); halo.addColorStop(1, `rgba(${ORANGE},0)`);
+        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#FFE1D3'; ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
       }
 
       for (const n of nodes) {
         const o = outOf(nodes.indexOf(n));
         const c = o ? o.charge : 0;
-        const base = o ? 4.5 + c * 5 : 2.6;
+        const base = o ? 3.5 + c * 3.5 : 1.8;
         if (n.flash > 0.02 || o) {
-          const rr = o ? 14 + c * 26 : 5 + n.flash * 14;
+          const rr = o ? 10 + c * 18 : 3 + n.flash * 8;
           const a = o ? 0.25 + c * 0.45 : 0.5 * n.flash;
           const gl = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, rr);
           gl.addColorStop(0, `rgba(${HOT},${a})`); gl.addColorStop(1, `rgba(${ORANGE},0)`);
@@ -309,29 +309,39 @@ function CanvasNetwork({ compact, still }: { compact: boolean; still: boolean })
         const lit = n.flash > 0.3 || !!o;
         ctx.strokeStyle = lit ? `rgba(${HOT},0.95)` : `rgba(${STEEL},0.45)`;
         ctx.fillStyle = lit ? `rgba(${HOT},${o ? 0.6 + c * 0.35 : 0.85})` : '#151515';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath(); ctx.arc(n.x, n.y, base + n.flash * 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(n.x, n.y, base + n.flash * 0.8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
 
-      // Gas: soft puffs that billow out, cool from hot white-orange to ember red, and thin away.
+      // Nebula shockwave: haze annulus plus bokeh motes riding the wavefront.
       ctx.globalCompositeOperation = 'lighter';
-      for (const q of puffs) {
-        if (q.delay > 0) continue;
-        const age = q.max - q.life;
-        const k = age / q.max; // 0 → 1 over the puff's life
-        const fadeIn = Math.min(1, age / 450);
-        const a = fadeIn * Math.pow(1 - k, 1.4) * 0.075;
-        if (a < 0.002) continue;
-        const r = q.r + (q.r1 - q.r) * (1 - Math.pow(1 - k, 2));
-        const ti = Math.min(3, Math.floor(k * 2.6 + 0.6 + q.tone * 1.2));
-        ctx.globalAlpha = a;
-        ctx.drawImage(tones[ti], q.x - r, q.y - r, r * 2, r * 2);
-      }
-      for (const e of embers) {
-        const k = e.life / e.max;
-        ctx.globalAlpha = k * 0.85;
-        ctx.fillStyle = k > 0.6 ? '#FFD9C4' : `rgb(${HOT})`;
-        ctx.beginPath(); ctx.arc(e.x, e.y, 0.6 + k * 1.2, 0, Math.PI * 2); ctx.fill();
+      for (const wv of waves) {
+        const t = wv.age;
+        const p = Math.min(1, t / WAVE_EXPAND);
+        const R = Math.max(4, wv.reach * (1 - Math.pow(1 - p, 2)));
+        const env = Math.min(1, t / 600) * (t < 2400 ? 1 : Math.pow(Math.max(0, 1 - (t - 2400) / (WAVE_LIFE - 2400)), 1.3));
+        if (env <= 0) continue;
+        const thick = 0.12 + p * 0.08;
+
+        const haze = ctx.createRadialGradient(wv.x, wv.y, R * (1 - thick * 1.6), wv.x, wv.y, R * (1 + thick));
+        haze.addColorStop(0, 'rgba(255,220,190,0)');
+        haze.addColorStop(0.45, `rgba(255,225,195,${0.22 * env})`);
+        haze.addColorStop(0.62, `rgba(255,150,90,${0.3 * env})`);
+        haze.addColorStop(0.8, `rgba(230,55,30,${0.32 * env})`);
+        haze.addColorStop(1, 'rgba(200,40,30,0)');
+        ctx.fillStyle = haze; ctx.fillRect(0, 0, w, h);
+
+        const grow = 0.55 + p * 0.9;
+        for (const m of wv.motes) {
+          const wob = Math.sin(time * 0.0015 + m.seed) * 0.02;
+          const rr = R * (m.off + wob);
+          const x = wv.x + Math.cos(m.a) * rr;
+          const y = wv.y + Math.sin(m.a) * rr;
+          const sz = m.size * grow;
+          if (x < -sz || x > w + sz || y < -sz || y > h + sz) continue;
+          ctx.globalAlpha = Math.min(1, 0.75 * env * m.bright);
+          ctx.drawImage(tones[m.tone], x - sz, y - sz, sz * 2, sz * 2);
+        }
       }
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';

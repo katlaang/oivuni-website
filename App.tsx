@@ -11,7 +11,7 @@ import { about, approach, contact, CONTACT_EMAIL, hero, nav, partners, pillars, 
 
 export default function App() {
   const [fontsLoaded] = useFonts({ Sora_500Medium, Sora_600SemiBold, Inter_400Regular, Inter_500Medium, Inter_600SemiBold });
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const scrollRef = useRef<ScrollViewInstance>(null);
   const offsets = useRef<Partial<Record<SectionId, number>>>({});
 
@@ -57,7 +57,18 @@ export default function App() {
         {/* Hero */}
         <View onLayout={mark('top')} style={{ backgroundColor: colors.ink, overflow: 'hidden', position: 'relative' }}>
           <HeroBackground compact={narrow} />
-          <Container style={{ paddingTop: narrow ? 80 : 120, paddingBottom: narrow ? 88 : 128, gap: 32, position: 'relative' }}>
+          <Container
+            style={{
+              maxWidth: 1480,
+              paddingHorizontal: narrow ? 24 : Math.round(Math.min(72, Math.max(32, width * 0.04))),
+              minHeight: narrow ? undefined : Math.max(620, height - 81),
+              justifyContent: 'center',
+              paddingTop: narrow ? 56 : 56,
+              paddingBottom: narrow ? 72 : 72,
+              gap: 32,
+              position: 'relative',
+            }}
+          >
             <Text style={[s.eyebrow, { color: colors.accentOnDark }]}>{hero.eyebrow}</Text>
             <Text accessibilityRole="header" aria-level={1} style={[s.h1, { fontSize: h1, lineHeight: h1 * 1.04, maxWidth: 960 }]}>
               {hero.title}
