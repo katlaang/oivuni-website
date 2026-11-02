@@ -113,43 +113,60 @@ export async function startBrain(container, opts = {}) {
     uniforms: gasU, depthWrite: false, depthTest: false, transparent: true, blending: THREE.AdditiveBlending,
     vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
     fragmentShader: /* glsl */`
+      precision highp float;
       varying vec2 vUv; uniform float uTime, uHover, uRadius, uBloom; uniform vec2 uRes, uCenter;
-      float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
-      float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
-        return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y); }
-      float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<6;i++){ v+=a*noise(p); p=p*2.03+vec2(17.0,9.0); a*=0.5; } return v; }
-      vec3 rainbow(float t){ return 0.5 + 0.5*cos(6.2831*(t + vec3(0.0, 0.33, 0.67))); }
+      // Sine-free hash (Dave Hoskins): stable on all GPUs, no blocky precision artefacts.
+      float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      float noise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*f*(f*(f*6.0-15.0)+10.0);
+        return mix(mix(hash(i),hash(i+vec2(1,0)),u.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y); }
+      // Rotating each octave hides the grid; inputs stay small to keep precision.
+      const mat2 ROT = mat2(0.80, 0.60, -0.60, 0.80);
+      float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=ROT*p*2.02; a*=0.5; } return v; }
+      vec3 palette(float k){
+        // blue → cyan → magenta → orange → gold, blended smoothly
+        vec3 c0=vec3(0.15,0.35,1.0), c1=vec3(0.15,0.85,0.95), c2=vec3(0.85,0.25,0.85), c3=vec3(1.0,0.42,0.12), c4=vec3(1.0,0.8,0.35);
+        k = fract(k) * 4.0;
+        if (k < 1.0) return mix(c0,c1,k); if (k < 2.0) return mix(c1,c2,k-1.0); if (k < 3.0) return mix(c2,c3,k-2.0); return mix(c3,c4,k-3.0);
+      }
       void main(){
         vec2 asp = vec2(uRes.x / uRes.y, 1.0);
         vec2 p = (vUv - uCenter) * asp;
         float d = length(p);
-        float t = uTime * 0.035;
-        // domain-warped fbm gives wispy, filamentary gas
-        vec2 q = vec2(fbm(p * 2.2 + t), fbm(p * 2.2 - t + 5.2));
-        vec2 r = vec2(fbm(p * 2.0 + 3.0 * q + vec2(1.7, 9.2) + t * 1.4), fbm(p * 2.0 + 3.0 * q + vec2(8.3, 2.8) - t));
-        float f = fbm(p * 2.4 + 2.6 * r);
-        float wisps = pow(smoothstep(0.38, 0.95, f), 1.6);
-        float filaments = pow(1.0 - abs(fbm(p * 5.0 + 4.0 * r) * 2.0 - 1.0), 6.0);
-        // ring of gas hugging the brain, fading outward, empty-ish behind it
-        float R = uRadius * (1.0 + uBloom * 1.4);
-        float shell = smoothstep(R * 0.6, R * 1.05, d) * (1.0 - smoothstep(R * 1.25, R * 2.3, d));
+        float t = uTime * 0.02;
+        float R = uRadius * (1.0 + uBloom * 1.6);
+
+        // Billowing gas: low-frequency density, gently warped so it drifts and curls like smoke.
+        vec2 w = vec2(fbm(p * 1.1 + vec2(t, -t * 0.7)), fbm(p * 1.1 + vec2(4.7 - t * 0.6, 1.3 + t)));
+        float dens = fbm(p * 1.6 + w * 0.9 + vec2(-t * 0.5, t * 0.3));
+        float billow = smoothstep(0.35, 0.82, dens);
+        // finer wisps riding on the clouds, kept faint
+        float wisp = smoothstep(0.45, 0.85, fbm(p * 4.2 + w * 1.4 - t)) * 0.45;
+        // dark dust lanes break the gas up so it reads as volume, not liquid
+        float dust = smoothstep(0.5, 0.75, fbm(p * 2.6 - w + 9.1));
+        float gasAmt = (billow * 0.85 + wisp * billow) * (1.0 - dust * 0.55);
+
+        // Ambient gas hugs the brain; orange to the upper right, blue elsewhere.
+        float shell = smoothstep(R * 0.55, R * 1.0, d) * (1.0 - smoothstep(R * 1.3, R * 2.5, d));
         vec2 dirv = p / max(d, 1e-4);
-        // orange on the upper right, blue on the left and lower right
-        float warm = smoothstep(-0.2, 0.9, (dirv.y * 0.83 + dirv.x * 0.56) * 0.8 + p.x * 1.2);
-        vec3 orange = vec3(1.0, 0.36, 0.08), blue = vec3(0.12, 0.38, 1.0);
-        vec3 col = mix(blue, orange, warm);
-        float amt = (wisps * 0.5 + filaments * 0.55) * shell;
-        vec3 gas = col * pow(amt, 1.35) * 0.55;
-        // hover: multicolour nebula blooming out across the screen
-        float neb = uHover * (wisps * 0.9 + filaments * 0.8) * smoothstep(R * 0.4, R * 0.9, d) * (1.0 - smoothstep(R * 1.5, R * 3.4, d));
-        vec3 nebCol = rainbow(f * 1.6 + dirv.x * 0.18 + dirv.y * 0.12 + uTime * 0.03);
-        nebCol = mix(nebCol, vec3(1.0, 0.95, 0.9), filaments * 0.35);
-        gas += nebCol * pow(neb, 1.3) * 0.55;
+        float warm = smoothstep(-0.1, 0.8, dirv.y * 0.6 + dirv.x * 0.8 + (fbm(p * 0.9 + 3.0) - 0.5) * 0.8);
+        vec3 col = mix(vec3(0.12, 0.36, 1.0), vec3(1.0, 0.38, 0.1), warm);
+        vec3 gas = col * gasAmt * shell * 0.32;
+
+        // Hover: a bright multicolour nebula billows out across the screen.
+        float reach = smoothstep(R * 0.35, R * 0.85, d) * (1.0 - smoothstep(R * 1.6, R * 3.6, d));
+        float nebAmt = uHover * reach * (billow * 0.9 + wisp) * (1.0 - dust * 0.5);
+        vec3 nebCol = palette(fbm(p * 0.7 + w * 0.4 + 7.0) * 1.6 + t * 0.4);
+        // hot, near-white cores where the gas is densest
+        nebCol = mix(nebCol, vec3(1.0, 0.94, 0.88), smoothstep(0.7, 0.95, dens) * 0.45);
+        gas += nebCol * nebAmt * 0.6;
+
         // faint stars
-        float st = step(0.9975, hash(floor(vUv * uRes / 2.0))) * (0.4 + 0.6 * hash(floor(vUv * uRes / 2.0) + 3.0));
+        vec2 cell = floor(vUv * uRes / 2.0);
+        float st = step(0.9975, hash(cell)) * (0.4 + 0.6 * hash(cell + 3.1));
         gas += vec3(0.7, 0.8, 1.0) * st * 0.5;
+
         vec3 bg = vec3(0.00212, 0.00303, 0.00699); // #070A14 in linear space
-        gl_FragColor = vec4(bg + pow(gas, vec3(2.2)) * 3.2, 1.0);
+        gl_FragColor = vec4(bg + pow(max(gas, 0.0), vec3(2.0)) * 3.0, 1.0);
       }`,
   });
   const gasQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gasMat);
