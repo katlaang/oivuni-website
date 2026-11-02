@@ -181,7 +181,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     if (!canvas || !ctx) return;
 
     const rand = seeded(23);
-    const brain = buildBrain(compact ? 6000 : 13000, rand);
+    const brain = buildBrain(compact ? 8500 : 18500, rand);
     let w = 0, h = 0, cx = 0, cy = 0, S = 1;
     let streaks: Streak[] = [];
     let motes: Mote[] = [];
@@ -210,8 +210,21 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
       return c;
     };
-    const bokeh = NEB.map((c, i) => sprite(c, i % 2 === 1));
     const soft = NEB.map((c) => sprite(c, false));
+    // Precompute a deterministic cloud of dust points once per mount.
+    const dust = Array.from({ length: compact ? 470 : 1000 }, () => {
+      const a = rand() * Math.PI * 2;
+      const r = 0.88 + Math.pow(rand(), 0.7) * 1.1;
+      return {
+        x: Math.cos(a) * r,
+        y: Math.sin(a) * r * 0.78,
+        size: 0.55 + rand() * 1.65,
+        alpha: 0.08 + rand() * 0.54,
+        color: rand() < 0.24 ? '255,153,83' : rand() < 0.15 ? '225,237,255' : '112,181,255',
+        phase: rand() * Math.PI * 2,
+        speed: 0.00012 + rand() * 0.00027,
+      };
+    });
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
@@ -226,7 +239,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
 
     const startNebula = () => {
       motes = [];
-      const MC = compact ? 480 : 950;
+      const MC = compact ? 280 : 550;
       for (let i = 0; i < MC; i++) {
         const g = (rand() + rand() + rand() - 1.5) / 1.5;
         const inner = rand() < 0.12;
@@ -235,23 +248,18 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
         motes.push({ a: rand() * Math.PI * 2, off, size: 3 + Math.pow(rand(), 1.8) * (compact ? 16 : 26), tone: Math.max(0, Math.min(9, Math.round(band))), seed: rand() * 100, bright: 0.55 + rand() * 0.45 });
       }
       clouds = [];
-      const CC = compact ? 50 : 90;
+      const CC = compact ? 80 : 135;
       for (let i = 0; i < CC; i++) {
         const d = 0.3 + 0.75 * Math.pow(rand(), 0.8);
         clouds.push({ a: rand() * Math.PI * 2, d, r: (0.1 + rand() * 0.18) * Math.max(w, h), tone: Math.max(0, Math.min(9, Math.round(d * 9 + (rand() - 0.5) * 3))), seed: rand() * 100 });
       }
     };
 
-    const rotation = () => Math.sin(time * 0.00018) * 0.18 + (mouse.on ? (mouse.x - 0.5) * 0.2 : 0);
+    const rotation = () => Math.sin(time * 0.00012) * 0.095 + (mouse.on ? (mouse.x - 0.5) * 0.05 : 0);
 
-    // Brain visibility and reassembly through the cycle.
-    const brainState = () => {
-      if (clock < BURST_AT) return { alpha: 1, gather: 1 };
-      if (clock < BURST_AT + 600) return { alpha: 1 - (clock - BURST_AT) / 600, gather: 1 };
-      if (clock < REFORM_START) return { alpha: 0, gather: 0 };
-      const p = (clock - REFORM_START) / (REFORM_END - REFORM_START);
-      return { alpha: smooth(p), gather: ease(p) };
-    };
+    // The approved composition retains a fully formed brain throughout the
+    // cycle. The surrounding nebula breathes; it never replaces the brain.
+    const brainState = () => ({ alpha: 1, gather: 1 });
 
     const step = (dt: number) => {
       time += dt;
@@ -305,11 +313,11 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
         ctx.fillStyle = aura; ctx.fillRect(0, 0, w, h);
       }
 
-      // Brain point cloud — deliberately dim.
+      // Dense luminous neural structure with dark sulci for anatomical clarity.
       if (ba > 0.01) {
         const th = rotation(), cs = Math.cos(th), sn = Math.sin(th);
         const scatter = (1 - gather) * S * 0.9;
-        const dim = (compact ? 0.85 : 1.15) * ba * (1 + surgeP * 0.4);
+        const dim = (compact ? 1.18 : 1.48) * ba * (1 + surgeP * 0.12);
         for (const p of brain) {
           const xr = p.x * cs - p.z * sn;
           const zr = p.x * sn + p.z * cs;
@@ -320,7 +328,7 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
           const twinkle = 0.85 + 0.15 * Math.sin(time * 0.003 + p.sx * 20);
           const a = Math.min(1, p.b * depth * twinkle * dim);
           ctx.fillStyle = `rgba(${p.c},${a})`;
-          const sz = p.b > 0.85 ? 2.2 : 1.6;
+          const sz = p.b > 0.85 ? 2.1 : 1.45;
           ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
         }
       }
@@ -335,60 +343,81 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
         ctx.beginPath(); ctx.moveTo(s.x - s.dx * len, s.y - s.dy * len); ctx.lineTo(s.x, s.y); ctx.stroke();
       }
 
-      // Nebula.
+      // A continuous, slowly breathing nebula. Gas clouds wrap around the brain
+      // instead of forming an expanding circular shockwave.
       const t = clock - BURST_AT;
+      const burst = t < 0 ? 0 : smooth(t / 1400) *
+        (1 - smooth((t - 2900) / (NEBULA - 2900)));
+      const breath = 0.88 + 0.12 * Math.sin(time * 0.00032);
+      const haze = [
+        { x: -1.02, y: 0.62, r: 0.74, c: '35,104,220', a: 0.10 },
+        { x: -0.65, y: -0.92, r: 0.82, c: '35,116,235', a: 0.11 },
+        { x: 0.12, y: -1.06, r: 0.84, c: '72,149,255', a: 0.13 },
+        { x: 0.96, y: -0.94, r: 0.73, c: '243,100,40', a: 0.18 },
+        { x: 1.40, y: -0.34, r: 0.76, c: '255,119,45', a: 0.16 },
+        { x: 1.27, y: 0.42, r: 0.86, c: '70,130,245', a: 0.13 },
+        { x: 0.56, y: 1.02, r: 0.77, c: '242,95,42', a: 0.13 },
+        { x: -0.46, y: 0.94, r: 0.87, c: '55,132,240', a: 0.12 },
+      ];
+      for (const c of haze) {
+        const x = cx + c.x * S + Math.sin(time * 0.00012 + c.x * 2) * S * 0.055;
+        const y = cy + c.y * S + Math.cos(time * 0.00013 + c.y * 2) * S * 0.043;
+        const r = S * c.r * (1 + burst * 0.36);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, 'rgba(' + c.c + ',' + (c.a * (breath + burst * 1.1)) + ')');
+        g.addColorStop(0.38, 'rgba(' + c.c + ',' + (c.a * 0.45 * (breath + burst)) + ')');
+        g.addColorStop(1, 'rgba(' + c.c + ',0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+      }
+
+      // Strands of ionized dust weave around the lobes, echoing the accepted
+      // blue-white and orange nebula reference without covering the headline.
+      const filaments = [
+        { c: '110,199,255', a: 0.48, w: 1.4, p: [-1.36,-0.22,-0.76,-1.46,0.53,-1.28,1.52,-0.62] },
+        { c: '255,129,61', a: 0.46, w: 1.65, p: [-1.28,0.62,-0.58,0.96,0.35,1.37,1.80,0.42] },
+        { c: '114,189,255', a: 0.42, w: 1.1, p: [-0.82,-1.08,0.09,-1.56,1.05,-1.08,1.73,-0.92] },
+        { c: '255,153,83', a: 0.33, w: 1.2, p: [0.12,1.12,0.83,0.85,1.50,0.99,1.81,0.35] },
+        { c: '97,165,255', a: 0.38, w: 1.3, p: [-1.53,0.38,-0.83,0.86,0.38,-0.92,1.48,-0.32] },
+      ];
+      ctx.save();
+      for (let i = 0; i < filaments.length; i++) {
+        const f = filaments[i];
+        const o = Math.sin(time * 0.00023 + i * 2) * S * 0.045;
+        ctx.beginPath();
+        ctx.moveTo(cx + f.p[0] * S, cy + f.p[1] * S);
+        ctx.bezierCurveTo(
+          cx + f.p[2] * S + o, cy + f.p[3] * S,
+          cx + f.p[4] * S - o, cy + f.p[5] * S,
+          cx + f.p[6] * S, cy + f.p[7] * S,
+        );
+        ctx.strokeStyle = 'rgba(' + f.c + ',' + (f.a * (breath + burst * 0.8)) + ')';
+        ctx.lineWidth = f.w;
+        ctx.shadowColor = 'rgb(' + f.c + ')';
+        ctx.shadowBlur = 10 + burst * 16;
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Star-like particles make the cloud read as fine cosmic dust.
+      for (const d of dust) {
+        const x = cx + d.x * S + Math.sin(time * d.speed + d.phase) * S * 0.04;
+        const y = cy + d.y * S + Math.cos(time * d.speed * 0.9 + d.phase) * S * 0.04;
+        if (x < 0 || x > w || y < 0 || y > h) continue;
+        const bright = d.alpha * (0.75 + 0.25 * Math.sin(time * 0.0015 + d.phase));
+        ctx.fillStyle = 'rgba(' + d.color + ',' + (bright * (1 + burst * 0.55)) + ')';
+        ctx.fillRect(x, y, d.size, d.size);
+      }
+
       if (t >= 0 && motes.length) {
-        // Core bloom: rises smoothly, then gives way to the expanding wave.
-        const core = t < 500 ? smooth(t / 500) : Math.max(0, 1 - (t - 500) / 1600);
-        if (core > 0) {
-          const R = S * (0.6 + t / 900);
-          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
-          g.addColorStop(0, `rgba(225,240,255,${0.28 * core})`);
-          g.addColorStop(0.35, `rgba(120,200,255,${0.18 * core})`);
-          g.addColorStop(1, 'rgba(90,160,255,0)');
-          ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
-        }
-
-        // Clouds: billow out across the hero, linger as a haze, then dissolve.
-        const cloudEnv = smooth(t / 800) * (t < 3000 ? 1 : Math.pow(Math.max(0, 1 - (t - 3000) / (NEBULA - 3000)), 1.2));
-        if (cloudEnv > 0) {
-          const spread = ease(t / 2600);
-          for (const c of clouds) {
-            const d = c.d * reach * 0.85 * spread;
-            const x = cx + Math.cos(c.a) * d + Math.sin(time * 0.0004 + c.seed) * 30;
-            const y = cy + Math.sin(c.a) * d * 0.8 + Math.cos(time * 0.0003 + c.seed) * 24;
-            const r = c.r * (0.4 + 0.6 * spread);
-            ctx.globalAlpha = 0.075 * cloudEnv;
-            ctx.drawImage(soft[c.tone], x - r, y - r, r * 2, r * 2);
-          }
-        }
-
-        // Shockwave ring of bokeh — the brightest part, like a cosmic explosion front.
-        const p = Math.min(1, t / 3000);
-        const R = Math.max(4, reach * (1 - Math.pow(1 - p, 2)));
-        const env = smooth(t / 500) * (t < 2400 ? 1 : Math.pow(Math.max(0, 1 - (t - 2400) / 2600), 1.3));
-        if (env > 0) {
-          ctx.globalAlpha = 1;
-          const thick = 0.12 + p * 0.08;
-          const haze = ctx.createRadialGradient(cx, cy, R * (1 - thick * 1.6), cx, cy, R * (1 + thick));
-          haze.addColorStop(0, 'rgba(90,170,255,0)');
-          haze.addColorStop(0.3, `rgba(100,190,255,${0.22 * env})`);
-          haze.addColorStop(0.44, `rgba(80,210,190,${0.2 * env})`);
-          haze.addColorStop(0.56, `rgba(225,225,150,${0.26 * env})`);
-          haze.addColorStop(0.68, `rgba(255,150,80,${0.32 * env})`);
-          haze.addColorStop(0.82, `rgba(230,55,40,${0.3 * env})`);
-          haze.addColorStop(0.92, `rgba(190,50,120,${0.16 * env})`);
-          haze.addColorStop(1, 'rgba(160,40,120,0)');
-          ctx.fillStyle = haze; ctx.fillRect(0, 0, w, h);
-          const grow = 0.55 + p * 0.9;
-          for (const m of motes) {
-            const rr = R * (m.off + Math.sin(time * 0.0015 + m.seed) * 0.02);
-            const x = cx + Math.cos(m.a) * rr, y = cy + Math.sin(m.a) * rr;
-            const sz = m.size * grow;
-            if (x < -sz || x > w + sz || y < -sz || y > h + sz) continue;
-            ctx.globalAlpha = Math.min(1, 0.85 * env * m.bright);
-            ctx.drawImage(bokeh[m.tone], x - sz, y - sz, sz * 2, sz * 2);
-          }
+        const cloudEnv = burst * 0.58;
+        const spread = 0.65 + smooth(t / 5000) * 0.55;
+        for (const c of clouds) {
+          const r = c.r * 0.68;
+          const x = cx + Math.cos(c.a) * c.d * S * spread * 1.34;
+          const y = cy + Math.sin(c.a) * c.d * S * spread * 0.95;
+          ctx.globalAlpha = cloudEnv * 0.32;
+          ctx.drawImage(soft[c.tone], x - r, y - r, r * 2, r * 2);
         }
         ctx.globalAlpha = 1;
       }
