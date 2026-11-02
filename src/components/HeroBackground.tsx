@@ -172,211 +172,324 @@ function usePrefersReducedMotion() {
 const ease = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
 const smooth = (t: number) => { const u = Math.max(0, Math.min(1, t)); return u * u * (3 - 2 * u); };
 
+/**
+ * Canvas implementation for the website. Brain geometry uses buildBrain()
+ * above; its folds and sulci remain the underlying anatomy.
+ * All interaction is observed on window because the canvas sits beneath
+ * text and must never intercept headline links or call-to-action buttons.
+ */
 function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const canvas = ref.current;
-    const ctx = canvas?.getContext('2d');
+    const ctx = canvas?.getContext('2d', { alpha: true });
     if (!canvas || !ctx) return;
 
-    // Dense, anatomically shaped particles, independent of the nebula.
-    // The brain never disappears during the slow bloom.
-    const rand = seeded(23);
-    const brain = buildBrain(compact ? 9000 : 21000, rand);
+    const rand = seeded(27);
+    const brain = buildBrain(compact ? 9500 : 23000, rand);
 
-    const PALETTE = [
-      '85,153,255', '120,213,255', '92,224,218',
-      '123,220,168', '232,220,140', '255,191,107',
-      '255,119,62', '241,78,118', '217,84,200',
-      '159,103,240', '105,113,250',
+    // Hot nodes follow the rotating brain surface, not the background.
+    const hotNodes = brain.filter((p) => p.b > 0.64 && rand() < 0.016).slice(0, compact ? 58 : 155);
+    const palette = [
+      '84,165,255', '126,218,255', '91,237,227', '117,208,168',
+      '238,217,120', '255,173,85', '255,105,62', '245,85,147',
+      '216,80,207', '156,95,242', '112,112,247',
     ];
 
-    // Blurred colour clouds are cached, rather than generating gradients every frame.
-    // Each is an irregular group of soft lobes, not a circular shockwave.
-    const sprites = PALETTE.map((color) => {
+    // Nebula sprites have several offset gas pockets instead of a single
+    // radial disc, so the bloom reads as diffuse gas rather than an orbit.
+    const makeCloud = (color: string) => {
       const sprite = document.createElement('canvas');
-      sprite.width = sprite.height = 192;
-      const sc = sprite.getContext('2d')!;
-      const add = (x: number, y: number, radius: number, opacity: number) => {
-        const grad = sc.createRadialGradient(x, y, 0, x, y, radius);
-        grad.addColorStop(0, 'rgba(' + color + ',' + opacity + ')');
-        grad.addColorStop(0.23, 'rgba(' + color + ',' + opacity * 0.70 + ')');
-        grad.addColorStop(0.62, 'rgba(' + color + ',' + opacity * 0.19 + ')');
-        grad.addColorStop(1, 'rgba(' + color + ',0)');
-        sc.fillStyle = grad;
-        sc.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      sprite.width = sprite.height = 180;
+      const g = sprite.getContext('2d')!;
+      const cloudLobe = (x: number, y: number, r: number, alpha: number) => {
+        const gradient = g.createRadialGradient(x, y, 0, x, y, r);
+        gradient.addColorStop(0, 'rgba(' + color + ',' + alpha + ')');
+        gradient.addColorStop(0.25, 'rgba(' + color + ',' + alpha * 0.76 + ')');
+        gradient.addColorStop(0.62, 'rgba(' + color + ',' + alpha * 0.15 + ')');
+        gradient.addColorStop(1, 'rgba(' + color + ',0)');
+        g.fillStyle = gradient;
+        g.fillRect(x - r, y - r, r * 2, r * 2);
       };
-      add(92, 91, 85, 0.50);
-      add(65, 113, 52, 0.24);
-      add(125, 61, 56, 0.22);
-      add(129, 121, 50, 0.20);
+      cloudLobe(89, 87, 85, 0.62);
+      cloudLobe(55, 111, 46, 0.30);
+      cloudLobe(124, 65, 50, 0.24);
+      cloudLobe(129, 120, 41, 0.18);
       return sprite;
-    });
-
-    type Cloud = {
-      x: number; y: number; radius: number; opacity: number;
-      color: number; phase: number; speed: number;
     };
-    const clouds: Cloud[] = Array.from({ length: compact ? 95 : 175 }, (_, i) => {
-      const angle = rand() * Math.PI * 2;
-      const distance = 0.38 + Math.pow(rand(), 0.73) * 1.52;
+    const cloudSprites = palette.map(makeCloud);
+
+    const makeSpark = (rgb: string) => {
+      const sprite = document.createElement('canvas');
+      sprite.width = sprite.height = 64;
+      const g = sprite.getContext('2d')!;
+      const grd = g.createRadialGradient(32, 32, 0, 32, 32, 31);
+      grd.addColorStop(0, 'rgba(255,250,234,1)');
+      grd.addColorStop(0.12, 'rgba(' + rgb + ',0.94)');
+      grd.addColorStop(0.4, 'rgba(' + rgb + ',0.3)');
+      grd.addColorStop(1, 'rgba(' + rgb + ',0)');
+      g.fillStyle = grd;
+      g.fillRect(0, 0, 64, 64);
+      return sprite;
+    };
+    const coolSpark = makeSpark('103,206,255');
+    const warmSpark = makeSpark('255,136,69');
+
+    // Emission zones follow actual regions around the silhouette.
+    // Different directions and distances avoid a circular shockwave.
+    const emitters = [
+      { x: -0.89, y: -0.16, dx: -0.98, dy: -0.38 },
+      { x: -0.48, y: -0.78, dx: -0.48, dy: -1.00 },
+      { x: 0.29, y: -0.83, dx: 0.22, dy: -1.08 },
+      { x: 0.86, y: -0.39, dx: 1.07, dy: -0.40 },
+      { x: 0.91, y: 0.30, dx: 1.12, dy: 0.54 },
+      { x: 0.34, y: 0.72, dx: 0.51, dy: 1.04 },
+      { x: -0.53, y: 0.57, dx: -0.62, dy: 0.92 },
+    ] as const;
+
+    const clouds = Array.from({ length: compact ? 92 : 166 }, (_, index) => {
+      const source = emitters[index % emitters.length];
       return {
-        x: Math.cos(angle) * distance,
-        y: Math.sin(angle) * distance * 0.83,
-        radius: 0.24 + rand() * 0.48,
-        opacity: 0.09 + rand() * 0.23,
-        color: i % PALETTE.length,
+        sx: source.x + (rand() - 0.5) * 0.44,
+        sy: source.y + (rand() - 0.5) * 0.36,
+        dx: source.dx * (0.35 + rand() * 0.86) + (rand() - 0.5) * 0.32,
+        dy: source.dy * (0.35 + rand() * 0.86) + (rand() - 0.5) * 0.32,
+        radius: 0.22 + rand() * 0.37,
+        alpha: 0.11 + rand() * 0.14,
+        color: Math.floor(rand() * palette.length),
         phase: rand() * Math.PI * 2,
-        speed: 0.00004 + rand() * 0.0001,
+        speed: 0.000045 + rand() * 0.000105,
       };
     });
 
-    const dust = Array.from({ length: compact ? 700 : 1800 }, () => {
-      const angle = rand() * Math.PI * 2;
-      const radius = 0.55 + Math.pow(rand(), 0.75) * 1.86;
+    const particles = Array.from({ length: compact ? 600 : 1550 }, (_, index) => {
+      const emitter = emitters[index % emitters.length];
       return {
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius * 0.83,
-        size: 0.45 + rand() * 1.3,
-        brightness: 0.12 + rand() * 0.56,
-        color: PALETTE[Math.floor(rand() * PALETTE.length)],
+        sx: emitter.x + (rand() - 0.5) * 0.5,
+        sy: emitter.y + (rand() - 0.5) * 0.48,
+        dx: emitter.dx * (0.35 + rand() * 1.4) + (rand() - 0.5) * 0.6,
+        dy: emitter.dy * (0.35 + rand() * 1.4) + (rand() - 0.5) * 0.6,
+        color: palette[Math.floor(rand() * palette.length)],
+        brightness: 0.24 + rand() * 0.68,
+        size: 0.6 + rand() * 1.4,
         phase: rand() * Math.PI * 2,
-        speed: 0.00008 + rand() * 0.00015,
       };
     });
 
-    let w = 0, h = 0, cx = 0, cy = 0, scale = 1;
-    let time = 0, raf = 0, visible = true;
-    let last = performance.now();
-    const pointer = { x: 0.5, active: false };
+    let width = 0;
+    let height = 0;
+    let centerX = 0;
+    let centerY = 0;
+    let scale = 1;
+    let raf = 0;
+    let frameTime = performance.now();
+    let elapsed = 0;
+    let paintedAt = -100;
+    let inView = true;
+    let hoverTarget = false;
+    let hoverStrength = 0;
+    let hoverAge = 0;
+    let tapUntil = 0;
+    const pointer = { x: 0.5, inside: false };
 
     const resize = () => {
       const bounds = canvas.getBoundingClientRect();
-      w = bounds.width;
-      h = bounds.height;
-      if (!w || !h) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      width = bounds.width;
+      height = bounds.height;
+      if (!width || !height) return;
+      // Higher DPR helps fine anatomy without using a 4K backing store.
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1.5 : 1.75);
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       if (compact) {
-        cx = w * 0.69;
-        cy = h * 0.54;
-        scale = Math.min(w * 0.43, h * 0.34);
+        centerX = width * 0.69;
+        centerY = height * 0.56;
+        scale = Math.min(width * 0.43, height * 0.35);
       } else {
-        cx = w * 0.65;
-        cy = h * 0.52;
-        scale = Math.min(w * 0.31, h * 0.49);
+        centerX = width * 0.65;
+        centerY = height * 0.52;
+        scale = Math.min(width * 0.31, height * 0.48);
       }
     };
 
+    // Only the brain is interactive, not the entire hero or its text column.
+    const isOverBrain = (clientX: number, clientY: number) => {
+      const r = canvas.getBoundingClientRect();
+      const dx = (clientX - r.left - centerX) / Math.max(1, scale * 1.04);
+      const dy = (clientY - r.top - centerY) / Math.max(1, scale * 0.84);
+      return dx * dx + dy * dy < 1;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') return;
+      pointer.x = (event.clientX - canvas.getBoundingClientRect().left) / Math.max(1, width);
+      const inside = isOverBrain(event.clientX, event.clientY);
+      if (inside && !pointer.inside) hoverAge = 0;
+      pointer.inside = inside;
+      hoverTarget = inside;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      // Touch users cannot hover. Tapping the brain starts a six-second bloom.
+      if (event.pointerType === 'touch' && isOverBrain(event.clientX, event.clientY)) {
+        hoverAge = 0;
+        tapUntil = performance.now() + 6000;
+      }
+    };
+    const onPointerOut = (event: PointerEvent) => {
+      if (!event.relatedTarget) {
+        pointer.inside = false;
+        hoverTarget = false;
+      }
+    };
+
+    const smooth = (v: number) => {
+      const t = Math.max(0, Math.min(1, v));
+      return t * t * (3 - 2 * t);
+    };
+
     const draw = () => {
-      if (!w || !h) return;
-      ctx.clearRect(0, 0, w, h);
+      if (!width || !height) return;
+      ctx.clearRect(0, 0, width, height);
 
-      // A long, continuously looping expansion. There is no strobe,
-      // no ring, no orbit/path lines, and no abrupt reset.
-      const breath = 0.5 - 0.5 * Math.cos((time / 26000) * Math.PI * 2);
-      const spread = 0.90 + 0.45 * breath;
-      const intensity = 0.86 + 0.43 * breath;
+      // Tiny cool aura and orange points are present at idle; large gas
+      // plumes stay dark until hovered/tapped.
+      const ambient = ctx.createRadialGradient(
+        centerX, centerY, scale * 0.08, centerX, centerY, scale * 1.55,
+      );
+      ambient.addColorStop(0, 'rgba(28,88,177,0.13)');
+      ambient.addColorStop(0.5, 'rgba(24,66,146,0.06)');
+      ambient.addColorStop(1, 'rgba(7,10,20,0)');
+      ctx.fillStyle = ambient;
+      ctx.fillRect(centerX - scale * 1.6, centerY - scale * 1.6, scale * 3.2, scale * 3.2);
 
-      ctx.globalCompositeOperation = 'screen';
-      const backlight = ctx.createRadialGradient(cx, cy, scale * 0.08, cx, cy, scale * 1.85);
-      backlight.addColorStop(0, 'rgba(36,86,170,0.16)');
-      backlight.addColorStop(0.54, 'rgba(48,79,151,0.09)');
-      backlight.addColorStop(1, 'rgba(8,12,29,0)');
-      ctx.fillStyle = backlight;
-      ctx.fillRect(0, 0, w, h);
-
-      // Layer nebula material behind the recognizable brain silhouette.
+      const bloom = smooth(hoverAge / 2200);
+      const intensity = hoverStrength * (0.28 + 0.72 * smooth(hoverAge / 1150));
+      const spread = 0.12 + bloom * 1.18;
+      // Cloud layer is BEHIND the brain, preserving the crisp gyri.
       ctx.save();
+      ctx.globalCompositeOperation = 'screen';
       for (const cloud of clouds) {
-        const dx = Math.sin(time * cloud.speed + cloud.phase) * scale * 0.07;
-        const dy = Math.cos(time * cloud.speed * 0.7 + cloud.phase) * scale * 0.05;
-        const x = cx + cloud.x * scale * spread + dx;
-        const y = cy + cloud.y * scale * spread + dy;
-        const r = scale * cloud.radius * (1 + breath * 0.38);
-        ctx.globalAlpha = cloud.opacity * intensity;
-        ctx.drawImage(sprites[cloud.color], x - r, y - r, r * 2, r * 2);
+        const dx = Math.sin(elapsed * cloud.speed + cloud.phase) * 0.06;
+        const dy = Math.cos(elapsed * cloud.speed * 0.75 + cloud.phase) * 0.045;
+        const x = centerX + (cloud.sx + cloud.dx * spread + dx) * scale;
+        const y = centerY + (cloud.sy + cloud.dy * spread + dy) * scale;
+        const radius = scale * cloud.radius * (0.58 + bloom * 1.03);
+        // A near-black idle glow avoids the pale wash shown previously.
+        ctx.globalAlpha = cloud.alpha * (0.024 + intensity * 1.85);
+        ctx.drawImage(cloudSprites[cloud.color], x - radius, y - radius, radius * 2, radius * 2);
       }
       ctx.restore();
 
-      // Nebulous dust stays separated: sparks, not connected lines.
-      for (const star of dust) {
-        const x = cx + star.x * scale * spread +
-          Math.sin(time * star.speed + star.phase) * scale * 0.034;
-        const y = cy + star.y * scale * spread +
-          Math.cos(time * star.speed + star.phase) * scale * 0.026;
-        if (x < 0 || x > w || y < 0 || y > h) continue;
-        const twinkle = 0.78 + 0.22 * Math.sin(time * 0.0011 + star.phase);
-        ctx.fillStyle = 'rgba(' + star.color + ',' +
-          Math.min(0.9, star.brightness * twinkle * intensity) + ')';
-        ctx.fillRect(x, y, star.size, star.size);
+      // Scattered multicolor dust diffuses outward with the gas.
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      for (const mote of particles) {
+        const x = centerX + (mote.sx + mote.dx * spread) * scale;
+        const y = centerY + (mote.sy + mote.dy * spread) * scale;
+        if (x < 0 || x > width || y < 0 || y > height) continue;
+        const opacity = Math.min(0.8, mote.brightness * (0.07 + intensity * 0.8));
+        ctx.fillStyle = 'rgba(' + mote.color + ',' + opacity + ')';
+        ctx.fillRect(x, y, mote.size, mote.size);
       }
+      ctx.restore();
 
-      // Dense surface: existing gyri and cerebellum masks are preserved.
-      // Motion is a very small, slow turn, not an explosive disintegration.
-      const rot = Math.sin(time * 0.00009) * 0.075 +
-        (pointer.active ? (pointer.x - 0.5) * 0.035 : 0);
-      const cs = Math.cos(rot), sn = Math.sin(rot);
-      ctx.globalCompositeOperation = 'lighter';
-      for (const point of brain) {
-        const xr = point.x * cs - point.z * sn;
-        const zr = point.x * sn + point.z * cs;
-        const depth = 0.87 + 0.13 * (1 - (zr + 0.8) / 1.6);
-        const x = cx + xr * scale;
-        const y = cy + point.y * scale;
-        const twinkle = 0.89 + 0.11 * Math.sin(time * 0.0016 + point.sx * 22);
-        const alpha = Math.min(1, point.b * depth * twinkle * 1.54);
-        ctx.fillStyle = 'rgba(' + point.c + ',' + alpha + ')';
-        const size = point.b > 0.85 ? 2.05 : 1.52;
+      // Slow Y-axis rocking with z-parallax, not a flat static silhouette.
+      // 0.15 rad is about 8.6 degrees in either direction.
+      const yaw = Math.sin(elapsed * (Math.PI * 2 / 19000)) * 0.15 +
+        (pointer.inside ? (pointer.x - 0.5) * 0.035 : 0);
+      const cos = Math.cos(yaw), sin = Math.sin(yaw);
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      for (const p of brain) {
+        const rotatedX = p.x * cos - p.z * sin;
+        const rotatedZ = p.x * sin + p.z * cos;
+        const depth = 0.82 + 0.18 * (1 - (rotatedZ + 0.8) / 1.6);
+        const alpha = Math.min(0.97, p.b * depth *
+          (0.82 + hoverStrength * 0.20) *
+          (0.91 + 0.09 * Math.sin(elapsed * 0.0012 + p.sx * 15)));
+        const x = centerX + rotatedX * scale;
+        const y = centerY + p.y * scale;
+        const size = p.b > 0.82 ? 1.85 : p.b > 0.55 ? 1.3 : 1.0;
+        ctx.fillStyle = 'rgba(' + p.c + ',' + alpha + ')';
         ctx.fillRect(x, y, size, size);
       }
+      ctx.restore();
+
+      // Bright blue/orange energy nodes are attached to the rotating brain.
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < hotNodes.length; i++) {
+        const p = hotNodes[i];
+        const x = centerX + (p.x * cos - p.z * sin) * scale;
+        const y = centerY + p.y * scale;
+        const isWarm = i % 3 === 0;
+        const size = (isWarm ? 13 : 10) * (1 + hoverStrength * 0.34);
+        ctx.globalAlpha = (isWarm ? 0.32 : 0.27) +
+          hoverStrength * (isWarm ? 0.38 : 0.24);
+        ctx.drawImage(
+          isWarm ? warmSpark : coolSpark,
+          x - size * 0.5, y - size * 0.5, size, size,
+        );
+      }
+      ctx.restore();
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 1;
     };
 
     const tick = (now: number) => {
-      const dt = Math.max(0, Math.min(50, now - last));
-      last = now;
-      if (visible && !document.hidden) {
-        time += dt;
-        draw();
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    resize();
-    // Reduced motion uses a stable, fully drawn nebula and brain.
-    if (still) time = 9000;
-    draw();
-    if (!still) raf = requestAnimationFrame(tick);
+      const dt = Math.min(60, Math.max(0, now - frameTime));
+      frameTime = now;
+      if (inView && !document.hidden) {
+        elapsed += dt;
+        const active = hoverTarget || now < tapUntil;
+        if (active) {
+          hoverAge = Math.min(6800, hoverAge + dt);
+        } else if (hoverStrength < 0.018) {
+          hoverAge = 0;
+        }
+        // 0.5 s to charge, 2.2 s to release, with smooth exponential easing.
+        const response = active ? 480 : 2200;
+        hoverStrength += ((active ? 1 : 0) - hoverStrength) *
+          (1 - Math.exp(-dt / response));
 
-    const ro = new ResizeObserver(() => {
-      resize();
-      draw();
-    });
-    ro.observe(canvas);
-    const io = new IntersectionObserver(([entry]) => {
-      visible = entry.isIntersecting;
-      last = performance.now();
-    });
-    io.observe(canvas);
-    const onVisibility = () => { last = performance.now(); };
-    document.addEventListener('visibilitychange', onVisibility);
-    const onMove = (event: PointerEvent) => {
-      const bounds = canvas.getBoundingClientRect();
-      pointer.x = (event.clientX - bounds.left) / Math.max(1, bounds.width);
-      pointer.active = event.pointerType === 'mouse' &&
-        event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+        // Draw at up to 30 fps to keep the particle brain manageable.
+        if (now - paintedAt >= 32) {
+          draw();
+          paintedAt = now;
+        }
+      }
+      raf = window.requestAnimationFrame(tick);
     };
-    if (!still) window.addEventListener('pointermove', onMove, { passive: true });
+
+    resize();
+    draw();
+    if (!still) {
+      window.addEventListener('pointermove', onPointerMove, { passive: true });
+      window.addEventListener('pointerdown', onPointerDown, { passive: true });
+      window.addEventListener('pointerout', onPointerOut);
+      raf = window.requestAnimationFrame(tick);
+    }
+
+    const resizeObserver = new ResizeObserver(() => { resize(); draw(); });
+    resizeObserver.observe(canvas);
+    const visibilityObserver = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting;
+      frameTime = performance.now();
+    });
+    visibilityObserver.observe(canvas);
+    const tabChanged = () => { frameTime = performance.now(); };
+    document.addEventListener('visibilitychange', tabChanged);
+
     return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      io.disconnect();
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pointermove', onMove);
+      window.cancelAnimationFrame(raf);
+      resizeObserver.disconnect();
+      visibilityObserver.disconnect();
+      document.removeEventListener('visibilitychange', tabChanged);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerout', onPointerOut);
     };
   }, [compact, still]);
 
