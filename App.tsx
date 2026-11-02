@@ -232,8 +232,15 @@ export default function App() {
               <FooterCol title="WORK" links={[['Research', 'research'], ['Solutions & Products', 'solutions'], ['Partnerships', 'partners']]} go={go} />
             </View>
           </Container>
-          <Container style={{ paddingBottom: 40 }}>
+          <Container style={{ paddingBottom: 40, gap: 6 }}>
             <Text style={[s.small, { color: colors.footerText, fontSize: 13 }]}>© {new Date().getFullYear()} Oivuni AI. All rights reserved.</Text>
+            <Text style={[s.small, { color: colors.footerText, fontSize: 11, opacity: 0.75 }]}>
+              Hero brain derived from the HuBMAP Human Reference Atlas 3D brain (K. Browne, H. Schlehlein; Allen human brain atlas),{' '}
+              <Text accessibilityRole="link" onPress={() => Linking.openURL('https://creativecommons.org/licenses/by/4.0/')} style={{ textDecorationLine: 'underline' }}>
+                CC BY 4.0
+              </Text>
+              , resampled into particles.
+            </Text>
           </Container>
         </View>
       </ScrollView>
