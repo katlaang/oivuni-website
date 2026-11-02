@@ -144,7 +144,15 @@ function buildBrain(count: number, rand: () => number): BrainPoint[] {
     const half = 0.6 * Math.sqrt(Math.max(0, 1 - nx * nx - (ny * 1.4) ** 2)) + 0.06;
     const z = (rand() - 0.5) * 2 * half;
     const r = rand();
-    const c = r < 0.04 ? '255,150,90' : r < 0.07 ? '230,120,200' : L > 0.7 ? '175,225,255' : r < 0.5 ? '130,200,255' : '90,155,255';
+    // Orange light appears as irregular clusters of surface particles, never
+    // as hand-drawn strokes across the brain.
+    const warmPatch = L > 0.48 && n2(x * 0.022 + 13, y * 0.023 + 7) > 0.23;
+    const c = warmPatch
+      ? (r < 0.44 ? '255,170,92' : r < 0.82 ? '255,110,58' : '255,212,146')
+      : r < 0.04 ? '255,150,90'
+      : r < 0.07 ? '230,120,200'
+      : L > 0.7 ? '175,225,255'
+      : r < 0.5 ? '130,200,255' : '90,155,255';
     const ang = rand() * Math.PI * 2, sc = 0.4 + rand() * 0.9;
     pts.push({ x: nx, y: ny, z, c, b: 0.25 + 0.75 * L, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
   }
@@ -218,22 +226,6 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     const orangeSpark = sparkSprite('255,129,59');
     const blueSpark = sparkSprite('119,204,255');
 
-    // The grooved strokes stay *inside* the anatomical shape. These are
-    // brain gyri and sulci highlights, not decorative orbit lines.
-    const grooves = [
-      'M56 137 C85 89 126 67 162 58 C186 50 197 48 216 50',
-      'M74 168 C105 147 141 135 156 107 C170 88 173 65 171 43',
-      'M90 181 C128 170 153 150 166 126 C182 101 208 86 236 76',
-      'M142 200 C164 177 190 170 205 147 C226 115 251 106 284 97',
-      'M231 39 C247 65 253 87 273 104 C299 126 319 134 344 132',
-      'M276 53 C297 78 304 94 320 109 C341 128 352 145 360 166',
-      'M271 154 C305 151 326 166 348 188',
-      'M128 212 C167 195 197 190 225 183 C247 177 258 167 274 155',
-      'M142 226 C175 215 210 225 236 213',
-      'M276 219 C301 211 321 220 343 240',
-      'M270 238 C297 233 313 250 333 256',
-    ];
-
     const frameW = 960;
     const frameH = 740;
     const frameScale = 304;
@@ -267,30 +259,6 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
         g.fillStyle = 'rgba(' + p.c + ',' + intensity + ')';
         g.fillRect(x, y, radius, radius);
       }
-
-      // Soft luminous orange grooves follow the actual drawn surface.
-      // The clip ensures not a single stroke escapes into the hero.
-      g.save();
-      g.translate(frameCX, frameCY);
-      g.scale(frameScale / 175 * cyaw, frameScale / 175);
-      g.translate(-205 + syaw * 3, -160);
-      const brainMask = new Path2D(CEREBRUM + ' ' + TEMPORAL + ' ' + CEREBELLUM);
-      g.clip(brainMask);
-      g.globalCompositeOperation = 'screen';
-      for (let i = 0; i < grooves.length; i++) {
-        const path = new Path2D(grooves[i]);
-        const warm = i % 4 !== 2;
-        g.strokeStyle = warm ? 'rgba(255,101,41,0.48)' : 'rgba(119,211,255,0.44)';
-        g.lineWidth = 2.5;
-        g.shadowColor = warm ? '#FF793A' : '#59C9FF';
-        g.shadowBlur = 8;
-        g.stroke(path);
-        g.shadowBlur = 1;
-        g.strokeStyle = warm ? 'rgba(255,188,105,0.78)' : 'rgba(196,239,255,0.81)';
-        g.lineWidth = 0.62;
-        g.stroke(path);
-      }
-      g.restore();
 
       // Actual bright hot spots are attached to points on the rotating surface.
       g.globalCompositeOperation = 'lighter';
