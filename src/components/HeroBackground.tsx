@@ -3,21 +3,15 @@ import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 import Svg, { Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 
 /**
- * "Escaping intelligence" hero animation.
+ * Hero visual: a richly detailed particle brain wrapped in glowing blue and
+ * orange gas. Hovering (or tapping) the brain sets off a multicolour nebula.
  *
- * A dim particle brain slowly turns. Electrons start escaping from it, surge
- * faster and denser, and the brain releases a bright nebula that sweeps across
- * the whole hero. As the nebula clouds thin, the brain reassembles out of the
- * haze, and the cycle starts again (~14 s).
+ * The brain is a pre-rendered texture (public/brain.webp): shaded, tube-like
+ * gyri made of dots, dark sulci with orange veins, ridged cerebellum. It was
+ * generated offline from the outlines below so the page does no heavy work.
  *
- * The brain is drawn from vector outlines (lobes, cerebellum, brainstem, fissures)
- * and sampled into points along the outline and the meandering gyri.
- *
- * Photosensitivity safeguards (WCAG 2.3.1 / 2.2.2):
- *  - one nebula per ~14 s cycle (limit is 3 flashes per second)
- *  - nebula brightens over ~0.8 s and fades over several seconds; no strobing
- *  - honours prefers-reduced-motion with a still frame
- *  - pauses off-screen and in background tabs
+ * Photosensitivity: nebula brightens and fades over seconds, never strobes;
+ * prefers-reduced-motion gets a still frame; pauses off-screen/background.
  */
 
 const CALM = 4500;
@@ -58,106 +52,8 @@ const SULCI = [
   'M226 24 C216 46 230 66 216 92 C204 114 218 134 204 156 C196 168 194 178 192 186', // central sulcus
 ];
 
-type BrainPoint = { x: number; y: number; z: number; c: string; b: number; sx: number; sy: number };
-
-/** Gradient noise with a seeded permutation table. */
-function makeNoise(rand: () => number) {
-  const perm = new Uint8Array(512);
-  const p = Array.from({ length: 256 }, (_, i) => i);
-  for (let i = 255; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
-  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
-  const grad = (h: number, x: number, y: number) => {
-    const a = (h & 7) * (Math.PI / 4);
-    return Math.cos(a) * x + Math.sin(a) * y;
-  };
-  const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
-  return (x: number, y: number) => {
-    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
-    const xf = x - Math.floor(x), yf = y - Math.floor(y);
-    const u = fade(xf), v = fade(yf);
-    const aa = perm[perm[X] + Y], ab = perm[perm[X] + Y + 1], ba = perm[perm[X + 1] + Y], bb = perm[perm[X + 1] + Y + 1];
-    const x1 = grad(aa, xf, yf) + u * (grad(ba, xf - 1, yf) - grad(aa, xf, yf));
-    const x2 = grad(ab, xf, yf - 1) + u * (grad(bb, xf - 1, yf - 1) - grad(ab, xf, yf - 1));
-    return x1 + v * (x2 - x1);
-  };
-}
-
-/**
- * Build the brain as a shaded surface, then sample points from it:
- * rounded gyri are bright and dense, sulci (grooves) are dark gaps, the
- * fissures separate the lobes, and a soft rim glow defines the silhouette.
- */
-function buildBrain(count: number, rand: () => number): BrainPoint[] {
-  const W = 400, H = 300;
-  const layer = (draw: (g: CanvasRenderingContext2D) => void) => {
-    const c = document.createElement('canvas');
-    c.width = W; c.height = H;
-    const g = c.getContext('2d')!;
-    g.fillStyle = '#fff'; g.strokeStyle = '#fff'; g.lineJoin = 'round'; g.lineCap = 'round';
-    draw(g);
-    const d = g.getImageData(0, 0, W, H).data;
-    return (x: number, y: number) => d[((y | 0) * W + (x | 0)) * 4 + 3] / 255;
-  };
-  const cere = layer((g) => { g.fill(new Path2D(CEREBRUM)); g.fill(new Path2D(TEMPORAL)); });
-  const cbl = layer((g) => g.fill(new Path2D(CEREBELLUM)));
-  const stem = layer((g) => g.fill(new Path2D(STEM)));
-  const fiss = layer((g) => {
-    g.filter = 'blur(1.5px)';
-    g.lineWidth = 6; g.stroke(new Path2D(SULCI[0]));
-    g.lineWidth = 3.5; g.stroke(new Path2D(SULCI[1]));
-  });
-  const gap = layer((g) => { g.filter = 'blur(1.5px)'; g.lineWidth = 4; g.stroke(new Path2D(CEREBELLUM)); });
-  const inner = layer((g) => { g.filter = 'blur(5px)'; g.fill(new Path2D(CEREBRUM)); g.fill(new Path2D(TEMPORAL)); g.fill(new Path2D(CEREBELLUM)); });
-
-  const n1 = makeNoise(rand), n2 = makeNoise(rand), n3 = makeNoise(rand);
-  // Gyri: ridged, domain-warped noise gives worm-like folds, oriented roughly
-  // perpendicular to the crown and along the temporal lobe lower down.
-  const gyri = (x: number, y: number) => {
-    const wx = n2(x * 0.02, y * 0.02) * 1.6, wy = n3(x * 0.02 + 7, y * 0.02 + 3) * 1.6;
-    const ny = (y - 30) / 190;
-    const sx = 0.05 * (1.25 - 0.5 * ny), sy = 0.05 * (0.75 + 0.5 * ny);
-    const v = Math.abs(n1(x * sx + wx, y * sy + wy));
-    return Math.min(1, Math.max(0, (v - 0.03) / 0.2));
-  };
-  const folia = (x: number, y: number) => {
-    const v = Math.abs(Math.sin(y * 0.75 + n1(x * 0.03, y * 0.03) * 2.4 + Math.sin(x * 0.045) * 2.2));
-    return Math.min(1, Math.max(0, (v - 0.12) / 0.6));
-  };
-  const lum = (x: number, y: number) => {
-    const inC = cere(x, y) >= 0.5, inB = cbl(x, y) >= 0.5, inS = stem(x, y) >= 0.5;
-    if (!inC && !inB && !inS) return 0;
-    const edge = 1 - inner(x, y);
-    let l = inC ? gyri(x, y) * (1 - fiss(x, y) * 0.95) : inB ? folia(x, y) * 0.9 * (1 - gap(x, y) * 0.95) : 0.5;
-    const light = 0.6 + 0.4 * (1 - y / H);
-    const rim = Math.min(1, Math.max(0, (edge - 0.12) / 0.38));
-    l = l * light * (0.75 + 0.25 * (1 - edge)) + rim * 0.55 * (0.6 + 0.4 * light) * (inC || inB ? 1 : 0.4);
-    return Math.min(1, l);
-  };
-
-  const pts: BrainPoint[] = [];
-  let guard = 0;
-  while (pts.length < count && guard++ < count * 80) {
-    const x = rand() * W, y = rand() * H;
-    const L = lum(x, y);
-    if (L <= 0 || rand() > Math.pow(L, 1.3) * 0.95 + 0.01) continue;
-    const nx = (x - 205) / 175, ny = (y - 160) / 175;
-    const half = 0.6 * Math.sqrt(Math.max(0, 1 - nx * nx - (ny * 1.4) ** 2)) + 0.06;
-    const z = (rand() - 0.5) * 2 * half;
-    const r = rand();
-    // Orange light appears as irregular clusters of surface particles, never
-    // as hand-drawn strokes across the brain.
-    const warmPatch = L > 0.48 && n2(x * 0.022 + 13, y * 0.023 + 7) > 0.23;
-    const c = warmPatch
-      ? (r < 0.44 ? '255,170,92' : r < 0.82 ? '255,110,58' : '255,212,146')
-      : r < 0.04 ? '255,150,90'
-      : r < 0.07 ? '230,120,200'
-      : L > 0.7 ? '175,225,255'
-      : r < 0.5 ? '130,200,255' : '90,155,255';
-    const ang = rand() * Math.PI * 2, sc = 0.4 + rand() * 0.9;
-    pts.push({ x: nx, y: ny, z, c, b: 0.25 + 0.75 * L, sx: Math.cos(ang) * sc, sy: Math.sin(ang) * sc });
-  }
-  return pts;
-}
+// Glowing spark positions on the texture (fractions of its width/height).
+const BRAIN_SPARKS: [number, number][] = [[0.5963, 0.3415], [0.3602, 0.1257], [0.9325, 0.4099], [0.6276, 0.6713], [0.5876, 0.2031], [0.6972, 0.576], [0.1896, 0.4], [0.1633, 0.3981], [0.3101, 0.1297], [0.6644, 0.3164], [0.3277, 0.1401], [0.7764, 0.6435], [0.1666, 0.4553], [0.4381, 0.4787], [0.2216, 0.212], [0.5481, 0.4705], [0.5192, 0.3654], [0.1818, 0.4826], [0.3257, 0.3025], [0.4788, 0.6394], [0.1216, 0.3657], [0.3093, 0.6494], [0.7674, 0.5232], [0.5378, 0.1362], [0.5719, 0.3813], [0.4887, 0.0763], [0.1252, 0.5713], [0.9349, 0.5106], [0.5189, 0.0824], [0.2767, 0.5544]];
 
 function usePrefersReducedMotion() {
   const [reduce, setReduce] = useState(false);
@@ -181,16 +77,10 @@ const ease = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
 const smooth = (t: number) => { const u = Math.max(0, Math.min(1, t)); return u * u * (3 - 2 * u); };
 
 /**
- * Canvas implementation for the website. Brain geometry uses buildBrain()
- * above; its folds and sulci remain the underlying anatomy.
- * All interaction is observed on window because the canvas sits beneath
- * text and must never intercept headline links or call-to-action buttons.
- */
-/**
- * Hero visual v2. The brain's dense anatomical particle layers and the
- * multicolor nebula are rendered into offscreen canvases once at startup.
- * Every animation frame composites only two brain frames and one nebula image.
- * This avoids the expensive per-frame rendering that made hover stutter.
+ * Canvas implementation for the website. The brain is a pre-rendered image and
+ * both gas fields are built once into offscreen canvases, so each frame only
+ * composites a few bitmaps. Interaction is observed on window because the
+ * canvas sits beneath the copy and must never intercept links or buttons.
  */
 function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -201,15 +91,12 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     if (!canvas || !ctx) return;
 
     const rand = seeded(87);
-    const brain = buildBrain(compact ? 10000 : 25000, rand);
     const colors = [
       '76,148,255', '123,218,255', '107,236,227',
       '159,232,166', '255,225,124', '255,170,78',
       '255,104,58', '249,82,151', '212,94,239', '139,98,255',
     ];
 
-    // Fine blue-white and orange hot nodes. Only sampled once, not each frame.
-    const hotNodes = brain.filter((p) => p.b > 0.57 && rand() < 0.018).slice(0, compact ? 90 : 230);
     const sparkSprite = (rgb: string) => {
       const c = document.createElement('canvas');
       c.width = c.height = 80;
@@ -225,69 +112,24 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
     };
     const orangeSpark = sparkSprite('255,129,59');
     const blueSpark = sparkSprite('119,204,255');
+    const sparks = BRAIN_SPARKS.map(([u, v], i) => ({ u, v, warm: i % 4 !== 1, phase: rand() * Math.PI * 2, speed: 0.6 + rand() * 0.9 }));
 
-    const frameW = 960;
-    const frameH = 740;
-    const frameScale = 304;
-    const frameCX = frameW / 2;
-    const frameCY = frameH / 2;
-
-    const renderBrain = (yaw: number) => {
-      const c = document.createElement('canvas');
-      c.width = frameW;
-      c.height = frameH;
-      const g = c.getContext('2d')!;
-      const cyaw = Math.cos(yaw);
-      const syaw = Math.sin(yaw);
-
-      // Local aura makes the brain dimensional without washing out the scene.
-      const aura = g.createRadialGradient(frameCX, frameCY, frameScale * 0.15, frameCX, frameCY, frameScale * 1.15);
-      aura.addColorStop(0, 'rgba(38,84,153,0.13)');
-      aura.addColorStop(1, 'rgba(31,82,157,0)');
-      g.fillStyle = aura;
-      g.fillRect(0, 0, frameW, frameH);
-
-      // Dense blue particle surface, shaded by depth so the lobes retain shape.
-      for (const p of brain) {
-        const xr = p.x * cyaw - p.z * syaw;
-        const zr = p.x * syaw + p.z * cyaw;
-        const depth = 0.69 + 0.31 * (1 - (zr + 0.9) / 1.8);
-        const x = frameCX + xr * frameScale;
-        const y = frameCY + p.y * frameScale;
-        const intensity = Math.min(0.99, (0.22 + p.b * 0.8) * depth);
-        const radius = p.b > 0.82 ? 1.7 : p.b > 0.57 ? 1.3 : 0.94;
-        g.fillStyle = 'rgba(' + p.c + ',' + intensity + ')';
-        g.fillRect(x, y, radius, radius);
-      }
-
-      // Actual bright hot spots are attached to points on the rotating surface.
-      g.globalCompositeOperation = 'lighter';
-      for (let i = 0; i < hotNodes.length; i++) {
-        const p = hotNodes[i];
-        const x = frameCX + (p.x * cyaw - p.z * syaw) * frameScale;
-        const y = frameCY + p.y * frameScale;
-        const isWarm = i % 3 !== 1;
-        const r = isWarm ? 12 : 9;
-        g.globalAlpha = isWarm ? 0.62 : 0.44;
-        g.drawImage(isWarm ? orangeSpark : blueSpark, x - r / 2, y - r / 2, r, r);
-      }
-      g.globalAlpha = 1;
-      g.globalCompositeOperation = 'source-over';
-      return c;
-    };
-
-    // Nine cached angles give perceptible 3D parallax, without projecting
-    // 25,000 vertices on every animation frame.
-    const angles = Array.from({ length: 9 }, (_, i) => -0.24 + i * 0.06);
-    const frames = angles.map(renderBrain);
+    // Pre-rendered brain texture. Box geometry: 400×300 design units; one
+    // "scale" unit is 175 design units; the brain centre sits at (205, 160).
+    const brainImg = new Image();
+    let brainReady = false;
+    brainImg.onload = () => { brainReady = true; draw(); };
+    brainImg.src = '/brain.webp';
 
     // A painterly nebula texture, with distinct blue/cyan clouds and
     // orange, magenta, violet and gold regions, rather than a pale haze.
+    const makeGas = (palette: number[], plumes: number, dust: number, jitter = 1) => {
     const nebula = document.createElement('canvas');
     nebula.width = 1380;
     nebula.height = 1060;
     const ng = nebula.getContext('2d')!;
     const nCX = nebula.width * 0.5, nCY = nebula.height * 0.5, nS = 333;
+    const pick = (i: number) => palette[Math.max(0, Math.min(palette.length - 1, i))];
 
     const cloudSprite = (rgb: string) => {
       const c = document.createElement('canvas');
@@ -309,46 +151,61 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       return c;
     };
     const cloudSprites = colors.map(cloudSprite);
+    if (palette.length === 0) return nebula;
 
     // Each plume occupies an asymmetric cloud region, like nebula gas.
     // Avoid rings, geometric arcs, external network lines and starbursts.
     const emitters = [
       { x: -0.92, y: -0.25, dx: -0.54, dy: -0.16, color: 0 },
       { x: -0.48, y: -0.91, dx: -0.31, dy: -0.44, color: 1 },
-      { x: 0.24, y: -0.95, dx: 0.27, dy: -0.37, color: 8 },
-      { x: 0.92, y: -0.78, dx: 0.57, dy: -0.43, color: 6 },
-      { x: 1.07, y: 0.08, dx: 0.64, dy: 0.06, color: 5 },
-      { x: 0.89, y: 0.55, dx: 0.49, dy: 0.45, color: 9 },
-      { x: 0.23, y: 0.98, dx: 0.19, dy: 0.33, color: 1 },
-      { x: -0.65, y: 0.75, dx: -0.44, dy: 0.35, color: 6 },
+      { x: 0.24, y: -0.95, dx: 0.27, dy: -0.37, color: 2 },
+      { x: 0.92, y: -0.78, dx: 0.57, dy: -0.43, color: 3 },
+      { x: 1.07, y: 0.08, dx: 0.64, dy: 0.06, color: 4 },
+      { x: 0.89, y: 0.55, dx: 0.49, dy: 0.45, color: 5 },
+      { x: 0.23, y: 0.98, dx: 0.19, dy: 0.33, color: 6 },
+      { x: -0.65, y: 0.75, dx: -0.44, dy: 0.35, color: 7 },
     ];
     ng.globalCompositeOperation = 'screen';
-    for (let i = 0; i < (compact ? 185 : 320); i++) {
+    for (let i = 0; i < plumes; i++) {
       const e = emitters[i % emitters.length];
       const spread = 0.22 + Math.pow(rand(), 0.9) * 1.18;
       const x = nCX + (e.x + e.dx * spread + (rand() - 0.5) * 0.52) * nS;
       const y = nCY + (e.y + e.dy * spread + (rand() - 0.5) * 0.51) * nS;
       const radius = (0.22 + rand() * 0.54) * nS;
       ng.globalAlpha = 0.16 + rand() * 0.40;
-      const tint = Math.min(colors.length - 1, Math.max(0, e.color + Math.round((rand() - 0.5) * 3)));
+      const tint = pick(e.color + Math.round((rand() - 0.5) * 2 * jitter));
       ng.drawImage(cloudSprites[tint], x - radius, y - radius, radius * 2, radius * 2);
     }
 
     // Long, softly clustered dust clouds add fine structure to the gas.
     ng.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < (compact ? 1900 : 4200); i++) {
+    for (let i = 0; i < dust; i++) {
       const e = emitters[i % emitters.length];
       const d = Math.pow(rand(), 0.7) * 1.5;
       const x = nCX + (e.x + e.dx * d + (rand() - 0.5) * 0.5) * nS;
       const y = nCY + (e.y + e.dy * d + (rand() - 0.5) * 0.46) * nS;
       const alpha = 0.15 + rand() * 0.63;
       const size = 0.55 + rand() * 1.7;
-      const color = colors[Math.min(colors.length - 1, Math.max(0, e.color + Math.round((rand() - 0.5) * 2)))];
+      const color = colors[pick(e.color + Math.round((rand() - 0.5) * 2 * jitter))];
       ng.fillStyle = 'rgba(' + color + ',' + alpha + ')';
       ng.fillRect(x, y, size, size);
     }
     ng.globalAlpha = 1;
+    // Feather the edges so the texture never shows a rectangular boundary.
+    ng.globalCompositeOperation = 'destination-in';
+    const fadeMask = ng.createRadialGradient(nCX, nCY, nebula.height * 0.2, nCX, nCY, nebula.width * 0.5);
+    fadeMask.addColorStop(0, 'rgba(0,0,0,1)');
+    fadeMask.addColorStop(0.7, 'rgba(0,0,0,0.85)');
+    fadeMask.addColorStop(1, 'rgba(0,0,0,0)');
+    ng.fillStyle = fadeMask;
+    ng.fillRect(0, 0, nebula.width, nebula.height);
     ng.globalCompositeOperation = 'source-over';
+    return nebula;
+    };
+    // Hover nebula: every colour. Ambient gas: deep blue, cyan and orange only.
+    const nebula = makeGas([0, 1, 8, 6, 5, 9, 1, 6], compact ? 185 : 320, compact ? 1900 : 4200);
+    // left, top-left, top, top-right, right, bottom-right, bottom, bottom-left
+    const ambient = makeGas([0, 1, 6, 6, 5, 0, 1, 0], compact ? 110 : 200, compact ? 1600 : 3600, 0);
 
     let width = 0, height = 0, cx = 0, cy = 0, scale = 1;
     let raf = 0, elapsed = 0, last = performance.now();
@@ -365,8 +222,8 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (compact) {
-        cx = width * 0.69; cy = height * 0.56;
-        scale = Math.min(width * 0.43, height * 0.35);
+        cx = width * 0.56; cy = height * 0.6;
+        scale = Math.min(width * 0.4, height * 0.3);
       } else {
         cx = width * 0.65; cy = height * 0.52;
         scale = Math.min(width * 0.31, height * 0.48);
@@ -409,11 +266,24 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
       const bloom = ease(hoverAge / 2200);
       const intensity = hoverMix * (0.24 + 0.76 * ease(hoverAge / 1300));
 
-      // Nebula stays nearly absent until the pointer reaches the brain.
-      // The whole pre-rendered gas field grows organically behind it.
+      const t = elapsed / 1000;
+      const aspect = nebula.width / nebula.height;
+
+      // Ambient blue/orange gas, always present, slowly breathing and drifting.
+      {
+        const size = scale * (2.55 + Math.sin(t * 0.21) * 0.07);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = (compact ? 0.3 : 0.42) * (1 - hoverMix * 0.4);
+        ctx.translate(cx + Math.sin(t * 0.07) * scale * 0.04, cy + Math.cos(t * 0.05) * scale * 0.03);
+        ctx.rotate(Math.sin(t * 0.04) * 0.05);
+        ctx.drawImage(ambient, -size * aspect / 2, -size / 2, size * aspect, size);
+        ctx.restore();
+      }
+
+      // Multicolour nebula blooms out when the pointer reaches the brain.
       if (hoverMix > 0.008) {
         const size = scale * (2.1 + bloom * 2.7);
-        const aspect = nebula.width / nebula.height;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = Math.min(0.98, intensity);
@@ -421,22 +291,26 @@ function CanvasBrain({ compact, still }: { compact: boolean; still: boolean }) {
         ctx.restore();
       }
 
-      // Blend two pre-rendered angles to make a gentle, dimensional Y turn.
-      // This draws two bitmaps instead of reprojecting 25,000 points.
-      const yaw = Math.sin(elapsed * Math.PI * 2 / 21000) * 0.24 +
-        (pointer.inside ? (pointer.x - 0.5) * 0.016 : 0);
-      const index = Math.max(0, Math.min(frames.length - 1.00001, (yaw + 0.24) / 0.06));
-      const lo = Math.floor(index), hi = Math.min(frames.length - 1, lo + 1);
-      const frac = index - lo;
-      const drawWidth = scale * (frameW / frameScale);
-      const drawHeight = scale * (frameH / frameScale);
-      const dx = cx - drawWidth / 2, dy = cy - drawHeight / 2;
-      ctx.globalAlpha = 1 - frac;
-      ctx.drawImage(frames[lo], dx, dy, drawWidth, drawHeight);
-      if (hi !== lo && frac > 0.01) {
-        ctx.globalAlpha = frac;
-        ctx.drawImage(frames[hi], dx, dy, drawWidth, drawHeight);
+      // Brain texture with a gentle breathing float.
+      const breathe = 1 + Math.sin(t * 0.9) * 0.006 + hoverMix * 0.015;
+      const bw = scale * (400 / 175) * breathe, bh = scale * (300 / 175) * breathe;
+      const bx = cx - (205 / 400) * bw + (pointer.inside ? (pointer.x - 0.5) * scale * 0.03 : 0);
+      const by = cy - (160 / 300) * bh + Math.sin(t * 0.6) * scale * 0.008;
+      if (brainReady) {
+        ctx.globalAlpha = compact ? 0.8 : 0.95;
+        ctx.drawImage(brainImg, bx, by, bw, bh);
       }
+
+      // Twinkling sparks in the grooves; they flare up with the nebula.
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const sp of sparks) {
+        const tw = 0.5 + 0.5 * Math.sin(t * sp.speed * 2 + sp.phase);
+        const r = (sp.warm ? 14 : 10) * (0.7 + tw * 0.6) * (scale / 300) * (1 + hoverMix * 0.6);
+        ctx.globalAlpha = (sp.warm ? 0.75 : 0.55) * (0.35 + 0.65 * tw);
+        ctx.drawImage(sp.warm ? orangeSpark : blueSpark, bx + sp.u * bw - r, by + sp.v * bh - r, r * 2, r * 2);
+      }
+      ctx.restore();
       ctx.globalAlpha = 1;
     };
 
