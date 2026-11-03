@@ -76,16 +76,16 @@ export async function startBrain(container, opts = {}) {
         vec3 col = mix(deep, mid, crown);
         col = mix(col, hot, crown * crown * 0.65);
         // orange veins live in the grooves, clustered and flickering
-        float vein = smoothstep(0.55, 0.78, vnoise(position * 7.0 + 3.0)) * (1.0 - smoothstep(0.2, 0.6, ao));
+        float vein = smoothstep(0.5, 0.72, vnoise(position * 7.0 + 3.0)) * (1.0 - smoothstep(0.25, 0.7, ao));
         float flick = 0.6 + 0.4 * sin(uTime * (1.5 + seed * 2.5) + seed * 40.0);
-        vec3 orange = vec3(1.0, 0.45, 0.12);
-        col = mix(col, orange * (1.2 + flick), vein * 0.9);
-        float a = (0.06 + 0.94 * pow(crown, 1.4)) * (0.5 + 0.5 * clamp(facing, 0.0, 1.0)) + rim * 0.45 + vein * 0.9;
+        vec3 orange = vec3(1.0, 0.3, 0.05);
+        col = mix(col, orange * (0.85 + flick * 0.15), vein);
+        float a = (0.06 + 0.94 * pow(crown, 1.4)) * (0.5 + 0.5 * clamp(facing, 0.0, 1.0)) + rim * 0.45 + vein * 1.6;
         if (region > 1.5) a *= 0.75; // brainstem a touch dimmer
         a *= 1.0 + uHover * 0.2;
         vColor = pow(col, vec3(2.2)); vAlpha = a * uGain;
         gl_Position = projectionMatrix * mv;
-        float sz = uSize * (0.6 + 0.7 * crown + vein * 0.8) * (1.0 + uHover * 0.15);
+        float sz = uSize * (0.6 + 0.7 * crown + vein * 1.3) * (1.0 + uHover * 0.15);
         gl_PointSize = sz * uPx * (2.6 / -mv.z);
       }`,
     fragmentShader: /* glsl */`
@@ -102,6 +102,7 @@ export async function startBrain(container, opts = {}) {
   const pivot = new THREE.Group();
   pivot.add(brain);
   brain.rotation.y = -Math.PI / 2; // model front is +z → screen left
+  brain.scale.set(1, 0.9, 1.16); // gentle stylisation: longer front-to-back, less domed
   scene.add(pivot);
 
   // ---------- gas & nebula (full-screen shader behind the brain) ----------
@@ -149,8 +150,33 @@ export async function startBrain(container, opts = {}) {
         float shell = smoothstep(R * 0.55, R * 1.0, d) * (1.0 - smoothstep(R * 1.3, R * 2.5, d));
         vec2 dirv = p / max(d, 1e-4);
         float warm = smoothstep(-0.1, 0.8, dirv.y * 0.6 + dirv.x * 0.8 + (fbm(p * 0.9 + 3.0) - 0.5) * 0.8);
-        vec3 col = mix(vec3(0.12, 0.36, 1.0), vec3(1.0, 0.38, 0.1), warm);
+        vec3 col = mix(vec3(0.12, 0.36, 1.0), vec3(1.0, 0.3, 0.06), warm);
         vec3 gas = col * gasAmt * shell * 0.32;
+
+        // Fiery orange smoke: streaky strands that swirl around the brain. Noise is sampled in
+        // polar coordinates (stretched along the angle) so it forms long soft wisps, not cells.
+        // The angle seam sits on the left, behind the text mask.
+        float ang = atan(p.y, p.x);
+        vec2 sw = vec2(ang * 2.6 + d * 5.0 + (w.x - 0.5) * 2.4 + t * 0.5, d * 7.0 + (w.y - 0.5) * 4.0 + fbm(p * 3.0 + 2.0) * 1.5 - t * 0.8);
+        float strands = fbm(sw);
+        float fine = fbm(sw * vec2(1.7, 3.1) + 4.0);
+        float wispA = smoothstep(0.48, 0.78, strands) * (0.45 + 0.75 * smoothstep(0.35, 0.8, fine));
+        float bright = smoothstep(0.66, 0.86, strands) * smoothstep(0.5, 0.85, fine); // denser glowing cores
+        float fireZone = max(warm, smoothstep(0.2, 0.9, -dirv.x * 0.7 - dirv.y * 0.6) * 0.75);
+        float fireShell = smoothstep(R * 0.75, R * 1.08, d) * (1.0 - smoothstep(R * 1.2, R * 2.4, d));
+        // break the halo into separate plumes so it never reads as a ring
+        float plumes = smoothstep(0.42, 0.7, fbm(vec2(ang * 1.1, d * 1.5) + w * 0.8 + 11.0 - t * 0.2));
+        fireShell *= plumes;
+        float textSafe = smoothstep(0.30, 0.55, vUv.x);
+        vec3 fireCol = mix(vec3(1.0, 0.27, 0.03), vec3(1.0, 0.42, 0.08), bright);
+        gas += fireCol * (wispA * 0.6 + bright * 0.75) * fireZone * fireShell * textSafe;
+        // matching blue smoke on the cool side
+        gas += vec3(0.15, 0.42, 1.0) * wispA * 0.45 * (1.0 - fireZone) * fireShell * textSafe;
+
+        // embers: scattered glowing orange specks around the brain
+        vec2 ec = floor(vUv * uRes / 3.0);
+        float ember = step(0.9955, hash(ec + 17.0)) * fireShell * (0.5 + 0.5 * sin(uTime * (1.0 + hash(ec) * 3.0) + hash(ec) * 40.0));
+        gas += vec3(1.0, 0.3, 0.05) * ember * 0.9;
 
         // Hover: a bright multicolour nebula billows out across the screen.
         float reach = smoothstep(R * 0.35, R * 0.85, d) * (1.0 - smoothstep(R * 1.6, R * 3.6, d));
@@ -166,7 +192,10 @@ export async function startBrain(container, opts = {}) {
         gas += vec3(0.7, 0.8, 1.0) * st * 0.5;
 
         vec3 bg = vec3(0.00212, 0.00303, 0.00699); // #070A14 in linear space
-        gl_FragColor = vec4(bg + pow(max(gas, 0.0), vec3(2.0)) * 3.0, 1.0);
+        vec3 lin = pow(max(gas, 0.0), vec3(2.0)) * 3.0;
+        float peak = max(lin.r, max(lin.g, lin.b));
+        if (peak > 0.85) lin *= 0.85 / peak;
+        gl_FragColor = vec4(bg + lin, 1.0);
       }`,
   });
   const gasQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gasMat);

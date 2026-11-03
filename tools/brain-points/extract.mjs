@@ -13,7 +13,7 @@ function acc(i){const a=json.accessors[i];const bv=json.bufferViews[a.bufferView
     out[k*n+c]=v;}
   return {data:out,n,count:a.count,type:a.type,ct:a.componentType};}
 const t0=json.accessors[json.meshes[0].primitives[0].attributes._TISSUE]; console.log('TISSUE accessor',t0.type,t0.componentType,t0.normalized);
-const skip=/cingulate|precuneus|medial-frontal|medial-superior|paracentral|subcallosal|parahippocampal|gyrus-rectus|olfactory-cortex|insula|planum|transverse-temporal|operculum|lingual|cuneus|fusiform|inferior-temporal-region|orbital|white-matter|corpus|commissure|fornix|caudate|putamen|pallidus|accumbens|claustrum|amygdala|hippocampus|thalamus|subthalamic|septal|hypothalamus|pineal|nigra|ventricle|aqueduct|canal|nuclei|peduncles$|artery|arteries|chiasm|optic|olfactory-bulb|tectum/;
+const skip=/cingulate|precuneus|medial-frontal|medial-superior|paracentral|subcallosal|parahippocampal|olfactory-cortex|insula|planum|transverse-temporal|operculum|cuneus|white-matter|corpus|commissure|fornix|caudate|putamen|pallidus|accumbens|claustrum|amygdala|hippocampus|thalamus|subthalamic|septal|hypothalamus|pineal|nigra|ventricle|aqueduct|canal|nuclei|peduncles$|artery|arteries|chiasm|optic|olfactory-bulb|tectum/;
 const sel=[];
 json.nodes.forEach(nd=>{ if(nd.mesh===undefined) return; if(skip.test(nd.name)) return; sel.push(nd); });
 console.log('selected',sel.length);
@@ -69,7 +69,7 @@ for(let k=0,tries=0;k<NPTS&&tries<NPTS*20;tries++){const r=rnd()*A;let lo=0,hi=c
   let nx=N[a*3]*w+N[b*3]*u+N[c*3]*v,ny=N[a*3+1]*w+N[b*3+1]*u+N[c*3+1]*v,nz=N[a*3+2]*w+N[b*3+2]*u+N[c*3+2]*v;const nl=Math.hypot(nx,ny,nz)||1;
   // keep only outward-facing surface: drop parcel side walls and inner faces
   { const ex=(px-cx)/(0.5*(bb[3]-bb[0]))**2, ey=(py-cy)/(0.5*(bb[4]-bb[1]))**2, ez=(pz-cz)/(0.5*(bb[5]-bb[2]))**2; const el=Math.hypot(ex,ey,ez)||1;
-    const outward=(nx*ex+ny*ey+nz*ez)/(nl*el); if(outward < (meshes[mi].r===0?0.35:0.15)) continue; }
+    const outward=(nx*ex+ny*ey+nz*ez)/(nl*el); if(outward < (meshes[mi].r===0?0.12:0.0)) continue; }
   nrm[k*3]=Math.round(nx/nl*127);nrm[k*3+1]=Math.round(ny/nl*127);nrm[k*3+2]=Math.round(nz/nl*127);
   out[k*4]=Math.round((px-cx)/half*32767);out[k*4+1]=Math.round((py-cy)/half*32767);out[k*4+2]=Math.round((pz-cz)/half*32767);out[k*4+3]=0;
   aux[k*3]=Math.max(0,Math.min(255,Math.round(ao*255)));aux[k*3+1]=meshes[mi].r;aux[k*3+2]=Math.round(ridge*255);k++;}
